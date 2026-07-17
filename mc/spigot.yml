@@ -1,0 +1,108 @@
+# Lean spigot timings for RL workers (copied on each start).
+settings:
+  debug: false
+  save-user-cache-on-stop-server: false
+  moved-wrongly-threshold: 0.625
+  moved-too-quickly-multiplier: 10.0
+  timeout-time: 60
+  restart-on-crash: false
+  netty-threads: 2
+  attribute:
+    maxHealth:
+      max: 1024.0
+    movementSpeed:
+      max: 1024.0
+    attackDamage:
+      max: 2048.0
+players:
+  disable-saving: false
+advancements:
+  disable-saving: true
+  disabled:
+  - minecraft:story/root
+world-settings:
+  default:
+    verbose: false
+    mob-spawn-range: 3
+    entity-activation-range:
+      animals: 8
+      monsters: 16
+      raiders: 16
+      misc: 4
+      water: 4
+      villagers: 8
+      flying-monsters: 16
+    entity-tracking-range:
+      players: 24
+      animals: 24
+      monsters: 24
+      misc: 16
+      other: 32
+    ticks-per:
+      hopper-transfer: 24
+      hopper-check: 24
+      hopper-amount: 1
+    hopper-amount: 1
+    dragon-death-sound-radius: 0
+    seed-village: 10387312
+    merge-radius:
+      item: 4.0
+      exp: 6.0
+    growth:
+      cactus-modifier: 50
+      cane-modifier: 50
+      melon-modifier: 50
+      mushroom-modifier: 50
+      pumpkin-modifier: 50
+      sapling-modifier: 50
+      beetroot-modifier: 50
+      carrot-modifier: 50
+      potato-modifier: 50
+      wheat-modifier: 50
+      netherwart-modifier: 50
+      vine-modifier: 50
+      cocoa-modifier: 50
+    max-tnt-ticks-per-tick: 10
+    item-despawn-rate: 3000
+    view-distance: 2
+    simulation-distance: 2
+    hungry-cat-modifier: 50
+    hanging-tick-frequency: 100
+    zombie-aggressive-towards-villager: false
+    nerf-spawner-mobs: true
+    enable-zombie-pigmen-portal-spawns: false
+    wither-spawn-sound-radius: 0
+    end-portal-sound-radius: 0
+    max-entity-collisions: 2
+    dragon-death-sound-radius: 0
+    seed-feature: 14357617
+    seed-monument: 10387313
+    seed-slime: 987234911
+    hunger:
+      jump-walk-exhaustion: 0.05
+      jump-sprint-exhaustion: 0.2
+      combat-exhaustion: 0.1
+      regen-exhaustion: 6.0
+      swim-multiplier: 0.01
+      sprint-multiplier: 0.1
+      other-multiplier: 0.0
+    max-arrow-despawn-rate: 200
+    max-item-drop-period: 40
+    seed-bastion: 30084232
+    seed-endcity: 10387313
+    seed-fossil: 14357921
+    seed-portal: 34222645
+    seed-shipwreck: 165745295
+    hanging-tick-frequency: 100
+    unload-frozen-chunks: true
+commands:
+  tab-complete: -1
+  silent-commandblock-console: true
+  replace-commands: []
+  spam-exclusions: []
+  log: false
+  send-namespaced: false
+config-version: 12
+stats:
+  disable-saving: true
+  forced-stats: {}

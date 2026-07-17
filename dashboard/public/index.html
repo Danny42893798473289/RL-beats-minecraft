@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Minecraft HRL Dashboard</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=Syne:wght@600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header class="top">
+    <div>
+      <p class="eyebrow">Live training monitor</p>
+      <h1>Minecraft HRL</h1>
+    </div>
+    <div class="meta">
+      <span id="bot-count">— bots</span>
+      <span id="completions" class="completions" title="Times the stage goal was completed across all bots">
+        Completions <strong id="completions-count">0</strong>
+        <small id="completions-goal">—</small>
+      </span>
+      <span id="clock">—</span>
+      <button id="refresh" type="button">Refresh</button>
+    </div>
+  </header>
+
+  <main id="grid" class="grid" aria-live="polite"></main>
+
+  <template id="bot-card">
+    <article class="card">
+      <div class="card-head">
+        <div>
+          <h2 class="name"></h2>
+          <p class="sub"></p>
+        </div>
+        <span class="badge"></span>
+      </div>
+      <div class="viewer-wrap">
+        <iframe class="viewer" title="Bot view" loading="lazy"></iframe>
+        <a class="open-view" target="_blank" rel="noopener">Open view</a>
+      </div>
+      <div class="stats"></div>
+      <div class="inv-wrap">
+        <h3>Inventory</h3>
+        <ul class="inventory"></ul>
+      </div>
+    </article>
+  </template>
+
+  <script src="/app.js"></script>
+</body>
+</html>

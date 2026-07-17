@@ -1,0 +1,28 @@
+[project]
+name = "minecraft-hrl-trainer"
+version = "0.1.0"
+description = "Hierarchical reinforcement learning trainer for Minecraft 1.21.4"
+requires-python = ">=3.11,<3.14"
+dependencies = [
+  "gymnasium>=1.1,<2",
+  "numpy>=2.0,<3",
+  "stable-baselines3>=2.6,<3",
+  "tensorboard>=2.18,<3",
+  "torch>=2.6,<3",
+  "websocket-client>=1.8,<2",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.3,<9", "ruff>=0.9,<1"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }

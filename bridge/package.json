@@ -1,0 +1,21 @@
+{
+  "name": "minecraft-hrl-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.js",
+    "check": "node --check src/index.js && node --check src/skills.js && node --check src/observations.js && node --check src/discovery.js && node --check src/status.js"
+  },
+  "dependencies": {
+    "mineflayer": "^4.31.0",
+    "mineflayer-pathfinder": "^2.4.5",
+    "prismarine-viewer": "^1.33.0",
+    "rcon-client": "^4.2.5",
+    "vec3": "^0.1.10",
+    "ws": "^8.18.3"
+  },
+  "optionalDependencies": {
+    "canvas": "^3.2.3"
+  }
+}
