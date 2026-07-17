@@ -11,7 +11,7 @@ from stable_baselines3.common.vec_env import SubprocVecEnv
 
 from agents import build_ppo
 from env import MinecraftEnv
-from env.curriculum import stage_by_id
+from env.curriculum import STAGES, stage_by_id
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -40,7 +40,7 @@ def parse_args() -> argparse.Namespace:
     default_save = int(cfg.get("save_freq", 2000))
 
     parser = argparse.ArgumentParser(description="Train hierarchical Minecraft skill policies")
-    parser.add_argument("--stage", type=int, default=default_stage, choices=range(9))
+    parser.add_argument("--stage", type=int, default=default_stage, choices=range(len(STAGES)))
     parser.add_argument("--num-envs", type=int, default=default_envs)
     parser.add_argument("--base-port", type=int, default=default_port)
     parser.add_argument("--timesteps", type=int, default=default_steps)

@@ -35,7 +35,7 @@ model.
 Edit project-root [`config.json`](config.json). Defaults match a 10-bot shared-server run:
 
 - `shared_server: true` — one Paper; bots teleported ~`pad_spacing` (1000) blocks apart
-- `num_bots: 10`, `wipe_every_episodes: 25`, `stage: 2`, viewers on
+- `num_bots: 10`, `wipe_every_episodes: 25`, `stage: 2` (crafting_table), viewers on
 
 ## Native setup
 
@@ -52,10 +52,12 @@ In a second terminal:
 
 ```bash
 cd trainer
-uv run python train.py --load ../checkpoints/stage_2_wooden_tools_final.zip
+uv run python train.py --stage 3 --load ../checkpoints/stage_3_wooden_pickaxe_final.zip
 ```
 
 `train.py` reads `num_bots` / `stage` / `timesteps` from `config.json` when flags are omitted.
+With `"stage": 2` this trains the **crafting_table** goal; use `--stage 3` with
+`stage_3_wooden_pickaxe_final.zip` to continue wooden-pickaxe training.
 
 Ports (shared mode):
 
@@ -79,26 +81,47 @@ keeps checkpoints and GPU access straightforward.
 
 ## Curriculum
 
-| Stage | Name | Wins when it gets |
-|------:|------|-------------------|
-| 0 | `survival_boot` | any log |
-| 1 | `wood` | crafting table *(default)* |
-| 2 | `wooden_tools` | wooden pickaxe |
-| 3 | `stone` | stone pickaxe |
-| 4 | `iron` | iron pickaxe *(mine ore → smelt → craft)* |
-| 5 | `diamond` | diamond pickaxe *(iron pick → diamonds → craft)* |
-| 6 | `nether` | blaze rod |
-| 7 | `eyes_and_stronghold` | eye of ender |
-| 8 | `the_end` | dragon kill |
+Twenty fine-grained stages, each a short goal you train sequentially with `--load` from the
+previous stage's checkpoint. Each stage has its own episode-step budget (short for early goals,
+longer for the nether/end).
 
-Train iron / diamond from earlier checkpoints:
+| Stage | Name | Wins when it gets | Ep steps |
+|------:|------|-------------------|---------:|
+| 0 | `log` | any log | 256 |
+| 1 | `planks` | planks | 256 |
+| 2 | `crafting_table` | crafting table *(default `stage`)* | 256 |
+| 3 | `wooden_pickaxe` | wooden pickaxe | 384 |
+| 4 | `cobblestone` | cobblestone | 384 |
+| 5 | `stone_pickaxe` | stone pickaxe | 384 |
+| 6 | `furnace` | furnace | 384 |
+| 7 | `raw_iron` | raw iron | 512 |
+| 8 | `iron_ingot` | iron ingot *(smelt)* | 512 |
+| 9 | `iron_pickaxe` | iron pickaxe | 512 |
+| 10 | `diamond` | diamond | 768 |
+| 11 | `diamond_pickaxe` | diamond pickaxe | 768 |
+| 12 | `obsidian` | obsidian *(mine with diamond pick)* | 768 |
+| 13 | `flint_and_steel` | flint & steel | 512 |
+| 14 | `nether` | enter the Nether | 768 |
+| 15 | `blaze_rod` | blaze rod | 1024 |
+| 16 | `ender_pearl` | ender pearl | 1024 |
+| 17 | `ender_eye` | eye of ender | 768 |
+| 18 | `end` | enter the End | 1536 |
+| 19 | `dragon_killed` | Ender Dragon killed | 2048 |
+
+> Remapping note: this replaces the old 9-stage curriculum. The wooden pickaxe is now **stage 3**
+> (was 2); `config.json` `"stage": 2` now means **crafting_table**. Old checkpoints
+> (`stage_1_wood_final.zip`, `stage_3_wooden_pickaxe_final.zip`) still load — obs/action sizes are
+> unchanged — just pass them via `--load`.
+
+Train each stage from the previous checkpoint, e.g.:
 
 ```bash
-uv run python train.py --stage 4 --load ../checkpoints/stage_3_stone_final.zip --num-envs 3
-uv run python train.py --stage 5 --load ../checkpoints/stage_4_iron_final.zip --num-envs 3
+uv run python train.py --stage 3 --load ../checkpoints/stage_2_crafting_table_final.zip
+uv run python train.py --stage 5 --load ../checkpoints/stage_4_cobblestone_final.zip
+uv run python train.py --stage 9 --load ../checkpoints/stage_8_iron_ingot_final.zip
 ```
 
-Stages 6–8 still need more specialized skills.
+Stages 12–19 (obsidian → dragon) have the skills wired but need substantial training time.
 
 ```bash
 uv run python evaluate.py ../checkpoints/stage_1_wood_final.zip --stage 1

@@ -47,7 +47,7 @@ const config = {
   wipeEvery: Number(process.env.WIPE_EVERY_EPISODES ?? 15),
   softResetSleepMs: Number(process.env.SOFT_RESET_SLEEP_MS ?? 250),
   enableViewer: process.env.ENABLE_VIEWER !== "0" && process.env.ENABLE_VIEWER !== "false",
-  initialStage: Math.max(0, Math.min(8, Number(process.env.STAGE ?? 2))),
+  initialStage: Math.max(0, Math.min(19, Number(process.env.STAGE ?? 2))),
   serverDir: process.env.MC_SERVER_DIR
     ?? path.join(PROJECT_ROOT, "runtime", "mc0")
 };
@@ -67,11 +67,23 @@ let episodeMilestones = {};
 let rewardedTablePlace = false;
 /** How many times the current stage goal was achieved (process lifetime). */
 let stageCompletions = 0;
+/** Ender Dragon kill tracking (reset each episode). */
+let dragonSeen = false;
+let dragonKilled = false;
 const inventor = new SkillInventor();
 const controlState = { hotbar: 0, craftCursor: 0 };
+/** Fine-grained tech-tree goals, one per stage id (0..19). */
 const STAGE_GOALS = [
-  "log", "crafting_table", "wooden_pickaxe", "stone_pickaxe",
-  "iron_pickaxe", "diamond_pickaxe", "blaze_rod", "ender_eye", "dragon_killed"
+  "log", "planks", "crafting_table", "wooden_pickaxe", "cobblestone",
+  "stone_pickaxe", "furnace", "raw_iron", "iron_ingot", "iron_pickaxe",
+  "diamond", "diamond_pickaxe", "obsidian", "flint_and_steel", "nether",
+  "blaze_rod", "ender_pearl", "ender_eye", "end", "dragon_killed"
+];
+const MAX_STAGE = STAGE_GOALS.length - 1;
+/** Short, per-stage episode budgets (steps) so each goal is trainable. */
+const STAGE_STEPS = [
+  256, 256, 256, 384, 384, 384, 384, 512, 512, 512,
+  768, 768, 768, 512, 768, 1024, 1024, 768, 1536, 2048
 ];
 
 function isBotUsername(username) {
@@ -96,8 +108,24 @@ async function opAllNonBotPlayers() {
   }
 }
 
+function externalMilestones() {
+  return { dragon_killed: dragonKilled };
+}
+
 function observe() {
-  return snapshot(bot, stage, inventor.list().length, MAX_INVENTED);
+  return snapshot(bot, stage, inventor.list().length, MAX_INVENTED, externalMilestones());
+}
+
+/** Per-stage step budget; falls back to the configured global when out of range. */
+function stageStepLimit() {
+  return STAGE_STEPS[stage] ?? config.episodeSteps;
+}
+
+function isDragonEntity(entity) {
+  if (!entity) return false;
+  return entity.name === "ender_dragon"
+    || entity.displayName === "Ender Dragon"
+    || entity.entityType === bot?.registry?.entitiesByName?.ender_dragon?.id;
 }
 
 function actionInfo() {
@@ -128,7 +156,7 @@ function getPublicStatus() {
     episodeStep,
     episodeResets,
     wipeEvery: config.wipeEvery,
-    milestones: ready ? milestoneState(bot) : {},
+    milestones: ready ? milestoneState(bot, externalMilestones()) : {},
     inventedCount: inventor.list().length,
     viewerUrl: `http://127.0.0.1:${config.viewerPort}`,
     wsPort: config.wsPort,
@@ -213,6 +241,18 @@ function createBot() {
   });
   bot.on("death", () => {
     dead = true;
+  });
+  // Ender Dragon kill detection: we must have seen the dragon alive, then it
+  // dies / despawns while we are in the End dimension.
+  bot.on("entitySpawn", (entity) => {
+    if (isDragonEntity(entity)) dragonSeen = true;
+  });
+  bot.on("entityDead", (entity) => {
+    if (isDragonEntity(entity)) dragonKilled = true;
+  });
+  bot.on("entityGone", (entity) => {
+    const inEnd = ["the_end", "minecraft:the_end"].includes(bot.game?.dimension);
+    if (isDragonEntity(entity) && dragonSeen && inEnd) dragonKilled = true;
   });
   bot.on("end", () => {
     ready = false;
@@ -445,9 +485,11 @@ async function resetEpisode(requestedStage = 1) {
   inventor.resetEpisode();
   controlState.hotbar = 0;
   controlState.craftCursor = 0;
-  stage = Math.max(0, Math.min(8, Number(requestedStage)));
+  stage = Math.max(0, Math.min(MAX_STAGE, Number(requestedStage)));
   episodeStep = 0;
   dead = false;
+  dragonSeen = false;
+  dragonKilled = false;
   episodeResets += 1;
 
   let wiped = false;
@@ -463,7 +505,7 @@ async function resetEpisode(requestedStage = 1) {
   }
   await softReset();
 
-  previousMilestones = milestoneState(bot);
+  previousMilestones = milestoneState(bot, externalMilestones());
   episodeMilestones = { ...previousMilestones };
   rewardedTablePlace = Boolean(
     previousMilestones.crafting_table
@@ -491,7 +533,7 @@ async function resetEpisode(requestedStage = 1) {
  * ~15 if done near step 1, ~1 if finished at the episode limit.
  */
 function stageSpeedBonus(steps) {
-  const budget = Math.max(1, config.episodeSteps);
+  const budget = Math.max(1, stageStepLimit());
   const ratio = Math.min(1, Math.max(0, steps / budget));
   return Math.max(0.5, 15 * ((1 - ratio) ** 1.5));
 }
@@ -502,7 +544,9 @@ function rewardFor(before, after, result, inventedNow, healthBefore, healthAfter
     cobblestone: 1, stone_pickaxe: 10, furnace: 4,
     raw_iron: 6, iron_ingot: 10, iron_pickaxe: 16,
     diamond: 22, diamond_pickaxe: 36,
-    nether: 40, blaze_rod: 50, ender_eye: 60, end: 100
+    obsidian: 30, flint_and_steel: 24,
+    nether: 40, blaze_rod: 50, ender_pearl: 55, ender_eye: 60,
+    end: 100, dragon_killed: 300
   };
   let reward = result.ok ? -0.002 : -0.02;
   if (result.reason === "need_pickaxe" || result.reason === "need_better_pickaxe" || result.wasted) {
@@ -520,6 +564,11 @@ function rewardFor(before, after, result, inventedNow, healthBefore, healthAfter
   if (result.crafted === "furnace") reward += 2;
   if (result.crafted === "iron_pickaxe") reward += 4;
   if (result.crafted === "diamond_pickaxe") reward += 6;
+  if (result.crafted === "bucket") reward += 1;
+  if (result.crafted === "flint_and_steel") reward += 3;
+  if (result.crafted === "blaze_powder") reward += 2;
+  if (result.crafted === "ender_eye") reward += 6;
+  if (result.lit === "nether_portal") reward += 8;
 
   // Place table: one bonus per episode only (stops dig/place farming)
   if (result.placed === "crafting_table" && result.newlyPlaced) {
@@ -545,6 +594,7 @@ function rewardFor(before, after, result, inventedNow, healthBefore, healthAfter
   if (result.mined && (result.mined.includes("iron_ore") || result.mined.includes("diamond_ore"))) {
     reward += 1.5;
   }
+  if (result.mined === "obsidian") reward += 3;
 
   // Sticky milestones: once earned this episode, cannot re-trigger by dig/re-place
   for (const [key, weight] of Object.entries(weights)) {
@@ -579,7 +629,7 @@ async function step(action) {
   await ensureReady(90000).catch(() => {
     throw new Error("bot_not_ready");
   });
-  const before = milestoneState(bot);
+  const before = milestoneState(bot, externalMilestones());
   const healthBefore = bot.health ?? 20;
   let timer;
   const timeout = new Promise((_, reject) => {
@@ -601,14 +651,14 @@ async function step(action) {
 
   inventor.record(action, result);
   episodeStep += 1;
-  const after = milestoneState(bot);
+  const after = milestoneState(bot, externalMilestones());
   const inventedNow = inventor.maybeInvent(before, after);
   const healthAfter = bot.health ?? 0;
   const goal = STAGE_GOALS[stage];
   const success = Boolean(after[goal]) && !before[goal];
   if (success) stageCompletions += 1;
   const terminated = dead || healthAfter <= 0 || Boolean(after[goal]);
-  const truncated = episodeStep >= config.episodeSteps;
+  const truncated = episodeStep >= stageStepLimit();
   const damageTaken = Math.max(0, healthBefore - healthAfter);
   const speedBonus = success ? stageSpeedBonus(episodeStep) : 0;
   const reward = dead || healthAfter <= 0

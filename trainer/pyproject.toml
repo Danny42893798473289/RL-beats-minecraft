@@ -1,6 +1,6 @@
 [project]
 name = "minecraft-hrl-trainer"
-version = "0.1.0"
+version = "0.2.0"
 description = "Hierarchical reinforcement learning trainer for Minecraft 1.21.4"
 requires-python = ">=3.11,<3.14"
 dependencies = [

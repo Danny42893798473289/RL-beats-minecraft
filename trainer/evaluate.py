@@ -4,13 +4,14 @@ from pathlib import Path
 from stable_baselines3 import PPO
 
 from env import MinecraftEnv
+from env.curriculum import STAGES
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Evaluate a trained Minecraft policy")
     parser.add_argument("model", type=Path)
     parser.add_argument("--url", default="ws://127.0.0.1:8765")
-    parser.add_argument("--stage", type=int, default=1, choices=range(9))
+    parser.add_argument("--stage", type=int, default=1, choices=range(len(STAGES)))
     parser.add_argument("--episodes", type=int, default=10)
     args = parser.parse_args()
 

@@ -10,15 +10,26 @@ class Stage:
 
 
 STAGES = (
-    Stage(0, "survival_boot", "log", 256),
-    Stage(1, "wood", "crafting_table", 256),
-    Stage(2, "wooden_tools", "wooden_pickaxe", 384),
-    Stage(3, "stone", "stone_pickaxe", 512),
-    Stage(4, "iron", "iron_pickaxe", 1024),
-    Stage(5, "diamond", "diamond_pickaxe", 1536),
-    Stage(6, "nether", "blaze_rod", 2048),
-    Stage(7, "eyes_and_stronghold", "ender_eye", 3072),
-    Stage(8, "the_end", "dragon_killed", 4096),
+    Stage(0, "log", "log", 256),
+    Stage(1, "planks", "planks", 256),
+    Stage(2, "crafting_table", "crafting_table", 256),
+    Stage(3, "wooden_pickaxe", "wooden_pickaxe", 384),
+    Stage(4, "cobblestone", "cobblestone", 384),
+    Stage(5, "stone_pickaxe", "stone_pickaxe", 384),
+    Stage(6, "furnace", "furnace", 384),
+    Stage(7, "raw_iron", "raw_iron", 512),
+    Stage(8, "iron_ingot", "iron_ingot", 512),
+    Stage(9, "iron_pickaxe", "iron_pickaxe", 512),
+    Stage(10, "diamond", "diamond", 768),
+    Stage(11, "diamond_pickaxe", "diamond_pickaxe", 768),
+    Stage(12, "obsidian", "obsidian", 768),
+    Stage(13, "flint_and_steel", "flint_and_steel", 512),
+    Stage(14, "nether", "nether", 768),
+    Stage(15, "blaze_rod", "blaze_rod", 1024),
+    Stage(16, "ender_pearl", "ender_pearl", 1024),
+    Stage(17, "ender_eye", "ender_eye", 768),
+    Stage(18, "end", "end", 1536),
+    Stage(19, "dragon_killed", "dragon_killed", 2048),
 )
 
 

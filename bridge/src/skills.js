@@ -14,8 +14,12 @@ const CRAFT_TARGETS = [
   "wooden_axe", "wooden_sword",
   "stone_pickaxe", "furnace", "torch",
   "iron_ingot", "iron_pickaxe", "iron_sword",
-  "diamond_pickaxe", "shield"
+  "diamond_pickaxe", "diamond_sword", "shield",
+  "bucket", "flint_and_steel", "blaze_powder", "ender_eye"
 ];
+
+/** Blocks that behave like a placed nether/end portal frame or gateway. */
+const PORTAL_BLOCKS = ["nether_portal", "end_portal", "end_gateway"];
 
 /** Atomic actions the policy invents behavior from. */
 export const PRIMITIVES = [
@@ -186,9 +190,16 @@ async function gotoNear(bot, position, range = 2, timeoutMs = PATH_TIMEOUT_MS) {
 function findMineTarget(bot) {
   const tier = pickaxeTier(bot);
   const names = [];
+  // Diamond-tier pick can also collect obsidian (portal blocks).
+  if (tier >= 4) names.push("obsidian", "ancient_debris");
   if (tier >= 3) names.push(...DIAMOND_ORES, ...IRON_ORES, ...COAL_ORES);
   else if (tier >= 2) names.push(...IRON_ORES, ...COAL_ORES, ...STONE_BLOCKS);
   else if (tier >= 1) names.push(...COAL_ORES, ...STONE_BLOCKS);
+  // Need flint for flint_and_steel → dig gravel (hand-mineable, drops flint).
+  if (countName(bot, "iron_ingot") >= 1 && countName(bot, "flint_and_steel") === 0
+    && countName(bot, "flint") === 0) {
+    names.push("gravel");
+  }
   names.push(...LOGS);
 
   const ids = names.map((name) => bot.registry.blocksByName[name]?.id).filter(Boolean);
@@ -652,6 +663,24 @@ async function craftNext(bot, craftCursor) {
   if (count("diamond") >= 3 && sticks >= 2 && !has("diamond_pickaxe")) {
     priority.push("diamond_pickaxe");
   }
+  // --- Late-game craftables (nether / eyes / dragon path) ---
+  // Bucket (3 iron) for water+lava obsidian if we cannot mine it yet.
+  if (count("iron_ingot") >= 3 && !has("bucket") && !has("flint_and_steel")
+    && tier < 4 && !has("obsidian")) {
+    priority.push("bucket");
+  }
+  // Flint & steel (iron + flint) to light the nether portal.
+  if (has("iron_ingot") && has("flint") && !has("flint_and_steel")) {
+    priority.push("flint_and_steel");
+  }
+  // Blaze powder from blaze rods (fuel for eyes of ender).
+  if (has("blaze_rod") && count("blaze_powder") < 2 && !has("ender_eye")) {
+    priority.push("blaze_powder");
+  }
+  // Eye of ender = blaze powder + ender pearl.
+  if (has("blaze_powder") && has("ender_pearl") && !has("ender_eye")) {
+    priority.push("ender_eye");
+  }
   // Top up sticks if somehow below 2 again
   if (sticks < 2 && samePlanks >= 2) priority.unshift("stick");
 
@@ -735,6 +764,75 @@ async function equipBestTool(bot) {
   return { ok: true, equipped: tools[0].name };
 }
 
+async function equipItem(bot, name) {
+  const item = bot.inventory.items().find((i) => i.name === name);
+  if (!item) return false;
+  await bot.equip(item, "hand").catch(() => {});
+  return bot.heldItem?.name === name;
+}
+
+async function equipBestSword(bot) {
+  const swords = bot.inventory.items().filter((i) => i.name.endsWith("_sword"));
+  if (!swords.length) return false;
+  const rank = (name) => {
+    if (name.startsWith("netherite_")) return 5;
+    if (name.startsWith("diamond_")) return 4;
+    if (name.startsWith("iron_")) return 3;
+    if (name.startsWith("stone_")) return 2;
+    return 1;
+  };
+  swords.sort((a, b) => rank(b.name) - rank(a.name));
+  await bot.equip(swords[0], "hand").catch(() => {});
+  return true;
+}
+
+function findNearbyBlockByName(bot, name, maxDistance = 8) {
+  const id = bot.registry.blocksByName[name]?.id;
+  if (id == null) return null;
+  return bot.findBlock({ matching: id, maxDistance });
+}
+
+/** Light a nether portal: use flint & steel on an obsidian frame. */
+async function tryLightNetherPortal(bot) {
+  if (countName(bot, "flint_and_steel") === 0) return null;
+  if (findNearbyBlockByName(bot, "nether_portal", 6)) {
+    return { ok: true, lit: "nether_portal", already: true };
+  }
+  const obsidian = findNearbyBlockByName(bot, "obsidian", 6);
+  if (!obsidian) return null;
+  if (!(await equipItem(bot, "flint_and_steel"))) return { ok: false, reason: "no_flint_and_steel" };
+  await gotoNear(bot, obsidian.position, 3, PATH_TIMEOUT_MS);
+  await bot.lookAt(obsidian.position.offset(0.5, 1.0, 0.5)).catch(() => {});
+  try {
+    await bot.activateBlock(obsidian, new Vec3(0, 1, 0));
+  } catch {
+    try {
+      await bot.activateItem();
+      await sleep(150);
+      bot.deactivateItem();
+    } catch {
+      return { ok: false, reason: "light_failed" };
+    }
+  }
+  await sleep(300);
+  return findNearbyBlockByName(bot, "nether_portal", 6)
+    ? { ok: true, lit: "nether_portal" }
+    : { ok: true, reason: "ignited_obsidian" };
+}
+
+/** Walk into the nearest active portal / gateway to change dimension. */
+async function enterNearestPortal(bot) {
+  const ids = PORTAL_BLOCKS
+    .map((n) => bot.registry.blocksByName[n]?.id)
+    .filter((v) => v != null);
+  if (!ids.length) return null;
+  const portal = bot.findBlock({ matching: ids, maxDistance: 24 });
+  if (!portal) return null;
+  const ok = await gotoNear(bot, portal.position, 0, Math.max(PATH_TIMEOUT_MS, 4000));
+  await sleep(400);
+  return { ok, target: portal.name, entering: true };
+}
+
 async function executePrimitive(bot, name, state) {
   clearControl(bot);
   switch (name) {
@@ -773,11 +871,16 @@ async function executePrimitive(bot, name, state) {
     case "PLACE_HELD":
       return placeHeld(bot);
     case "ATTACK": {
-      const entity = bot.nearestEntity((e) => e.type === "mob" || e.type === "player");
+      const byName = (n) => bot.nearestEntity((e) => e?.name === n);
+      // Priority: Ender Dragon > Blaze > any hostile/mob/player.
+      const entity = byName("ender_dragon")
+        || byName("blaze")
+        || bot.nearestEntity((e) => ["mob", "hostile", "player"].includes(e.type));
       if (!entity) return { ok: false, reason: "no_target" };
-      await bot.lookAt(entity.position.offset(0, entity.height * 0.8, 0));
+      await equipBestSword(bot);
+      await bot.lookAt(entity.position.offset(0, (entity.height ?? 1) * 0.8, 0));
       await bot.attack(entity);
-      return { ok: true };
+      return { ok: true, attacked: entity.name ?? entity.type };
     }
     case "USE_ITEM": {
       // Looking at a crafting table → actually craft (don't just open the UI)
@@ -796,11 +899,16 @@ async function executePrimitive(bot, name, state) {
       if (countName(bot, "raw_iron") > 0 && findFuel(bot)) {
         return smeltRawIron(bot, 1);
       }
+      // Light a nether portal when flint & steel is near an obsidian frame.
+      const portalLit = await tryLightNetherPortal(bot);
+      if (portalLit) return portalLit;
       if (!bot.heldItem) return { ok: false, reason: "empty_hand" };
+      // Throwing an eye of ender / ender pearl also flows through activateItem.
+      const usedName = bot.heldItem.name;
       await bot.activateItem();
       await sleep(200);
       bot.deactivateItem();
-      return { ok: true };
+      return { ok: true, used: usedName };
     }
     case "EAT": {
       const food = bot.inventory.items().find((item) => item.foodPoints);
@@ -831,7 +939,14 @@ async function executePrimitive(bot, name, state) {
         const pick = await tryCraftWoodenPickaxe(bot);
         if (pick?.ok || pick?.crafted === "wooden_pickaxe") return { ...pick, via: "path_to_table" };
       }
+      // Walk into a portal / gateway to change dimension when one is near.
+      if (block && PORTAL_BLOCKS.includes(block.name)) {
+        const entered = await enterNearestPortal(bot);
+        if (entered) return { ...entered, via: "portal" };
+      }
       if (!block || block.name === "air") {
+        const portal = await enterNearestPortal(bot);
+        if (portal) return { ...portal, via: "portal" };
         block = findMineTarget(bot);
       }
       if (!block) return { ok: false, reason: "no_look_target" };
