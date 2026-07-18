@@ -62,8 +62,9 @@ With `"stage": 2` this trains the **crafting_table** goal; use `--stage 3` with
 Ports (shared mode):
 
 - Minecraft / RCON: `25565` / `25575` (one server)
-- WebSocket bridge: `8765 + rank`
-- Viewer / status: `3000 + rank` / `8865 + rank`
+- Dashboard: `8080` — bot views are proxied at `/viewer/<id>/` (FRP this one port for remote watching)
+- WebSocket bridge: `8765 + rank` (local trainer only)
+- Viewer backends / status: `3000 + rank` / `8865 + rank` (localhost; not needed via FRP)
 
 ## Docker setup
 

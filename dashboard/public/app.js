@@ -11,6 +11,7 @@ const cards = new Map();
 function rewriteLocalUrl(url) {
   if (!url) return url;
   try {
+    // Relative /viewer/N/ stays same-origin (works through a single FRP port).
     const parsed = new URL(url, window.location.origin);
     if (parsed.hostname === "127.0.0.1" || parsed.hostname === "localhost") {
       parsed.hostname = window.location.hostname;
@@ -18,6 +19,18 @@ function rewriteLocalUrl(url) {
     return parsed.toString();
   } catch {
     return url;
+  }
+}
+
+function viewerLabel(viewerUrl, botId) {
+  try {
+    const parsed = new URL(viewerUrl, window.location.origin);
+    if (parsed.pathname.startsWith("/viewer/")) {
+      return `/viewer/${botId}`;
+    }
+    return parsed.port || "—";
+  } catch {
+    return "—";
   }
 }
 
@@ -51,19 +64,31 @@ function renderBot(bot) {
   const stats = node.querySelector(".stats");
   const inventory = node.querySelector(".inventory");
   const viewerUrl = rewriteLocalUrl(bot.viewerUrl);
-  if (viewerUrl && iframe.src !== viewerUrl && iframe.src !== `${viewerUrl}`) {
-    // Only replace if still pointing at localhost from an older dashboard build
-    if (iframe.src.includes("127.0.0.1") || iframe.src.includes("localhost")) {
-      iframe.src = viewerUrl;
+  if (viewerUrl && iframe.src !== viewerUrl) {
+    const current = iframe.src || "";
+    // Migrate old direct :3000 URLs (or blank) onto the dashboard proxy path
+    if (
+      !current
+      || current.includes("127.0.0.1")
+      || current.includes("localhost")
+      || /:\d{4,5}\/?$/.test(new URL(current).origin + "/")
+      || !current.includes("/viewer/")
+    ) {
+      try {
+        const want = new URL(viewerUrl, window.location.origin).href;
+        if (iframe.src !== want) iframe.src = viewerUrl;
+      } catch {
+        iframe.src = viewerUrl;
+      }
     }
   }
   node.querySelector(".open-view").href = viewerUrl;
 
   badge.textContent = bot.online ? "online" : "offline";
   badge.className = `badge ${bot.online ? "online" : "offline"}`;
-  const viewPort = viewerUrl ? new URL(viewerUrl).port : "—";
+  const viewHint = viewerLabel(viewerUrl, bot.id);
   sub.textContent = bot.online
-    ? `stage ${bot.stage ?? "—"} · mc :${bot.mcPort ?? "—"} · view :${viewPort}`
+    ? `stage ${bot.stage ?? "—"} · mc :${bot.mcPort ?? "—"} · view ${viewHint}`
     : bot.error || "bridge unreachable";
 
   const held = bot.heldItem ? `${bot.heldItem.name} ×${bot.heldItem.count}` : "empty hand";

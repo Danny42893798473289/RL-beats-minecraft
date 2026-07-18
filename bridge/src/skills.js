@@ -1,5 +1,6 @@
 import pathfinderPkg from "mineflayer-pathfinder";
 import { Vec3 } from "vec3";
+import { needsWoodExplore } from "./observations.js";
 
 const { goals } = pathfinderPkg;
 
@@ -83,7 +84,12 @@ const BLOCK_TIER = {
 const IRON_ORES = ["iron_ore", "deepslate_iron_ore"];
 const DIAMOND_ORES = ["diamond_ore", "deepslate_diamond_ore"];
 const COAL_ORES = ["coal_ore", "deepslate_coal_ore"];
-const STONE_BLOCKS = ["stone", "cobblestone", "deepslate", "cobbled_deepslate", "granite", "diorite", "andesite"];
+const STONE_BLOCKS = ["stone", "cobblestone", "deepslate", "cobbled_deepslate", "granite", "diorite", "andesite", "tuff"];
+const SOFT_SURFACE = new Set([
+  "dirt", "grass_block", "coarse_dirt", "podzol", "rooted_dirt", "mud", "muddy_mangrove_roots",
+  "sand", "red_sand", "gravel", "clay", "snow", "snow_block", "powder_snow",
+  "farmland", "dirt_path", "mycelium", "moss_block"
+]);
 
 function pickaxeTier(bot) {
   let best = 0;
@@ -111,6 +117,13 @@ function countName(bot, name) {
   return bot.inventory.items()
     .filter((item) => item.name === name)
     .reduce((n, item) => n + item.count, 0);
+}
+
+/** Stage 4/5 or low cobble stock → dig stone with a pick, go underground. */
+function seekingCobble(bot, stage = 0) {
+  if (!hasPickaxe(bot)) return false;
+  if (stage === 4 || stage === 5 || stage === 6) return true;
+  return countName(bot, "cobblestone") < 8;
 }
 
 function findFuel(bot) {
@@ -187,24 +200,87 @@ async function gotoNear(bot, position, range = 2, timeoutMs = PATH_TIMEOUT_MS) {
   }
 }
 
-function findMineTarget(bot) {
+function findStoneTarget(bot, maxDistance = 32) {
+  const ids = STONE_BLOCKS.map((name) => bot.registry.blocksByName[name]?.id).filter(Boolean);
+  if (!ids.length) return null;
+  // Prefer stone at/below the player (underground), not floating surface outliers.
+  const y = bot.entity?.position?.y ?? 64;
+  const candidates = bot.findBlocks({ matching: ids, maxDistance, count: 12 });
+  if (!candidates?.length) {
+    return bot.findBlock({ matching: ids, maxDistance });
+  }
+  candidates.sort((a, b) => {
+    // Prefer below or near foot level, then closer horizontally
+    const aBelow = a.y <= y + 1 ? 0 : 1;
+    const bBelow = b.y <= y + 1 ? 0 : 1;
+    if (aBelow !== bBelow) return aBelow - bBelow;
+    const me = bot.entity.position;
+    const da = (a.x - me.x) ** 2 + (a.y - me.y) ** 2 + (a.z - me.z) ** 2;
+    const db = (b.x - me.x) ** 2 + (b.y - me.y) ** 2 + (b.z - me.z) ** 2;
+    return da - db;
+  });
+  return bot.blockAt(candidates[0]) ?? null;
+}
+
+function findMineTarget(bot, stage = 0) {
   const tier = pickaxeTier(bot);
+  // Cobble stage: only hunt stone-family blocks first (skip logs).
+  if (seekingCobble(bot, stage) && tier >= 1) {
+    const stone = findStoneTarget(bot, 36);
+    if (stone) return stone;
+  }
+
   const names = [];
-  // Diamond-tier pick can also collect obsidian (portal blocks).
   if (tier >= 4) names.push("obsidian", "ancient_debris");
-  if (tier >= 3) names.push(...DIAMOND_ORES, ...IRON_ORES, ...COAL_ORES);
+  if (tier >= 3) names.push(...DIAMOND_ORES, ...IRON_ORES, ...COAL_ORES, ...STONE_BLOCKS);
   else if (tier >= 2) names.push(...IRON_ORES, ...COAL_ORES, ...STONE_BLOCKS);
-  else if (tier >= 1) names.push(...COAL_ORES, ...STONE_BLOCKS);
-  // Need flint for flint_and_steel → dig gravel (hand-mineable, drops flint).
+  else if (tier >= 1) names.push(...STONE_BLOCKS, ...COAL_ORES);
   if (countName(bot, "iron_ingot") >= 1 && countName(bot, "flint_and_steel") === 0
     && countName(bot, "flint") === 0) {
     names.push("gravel");
   }
-  names.push(...LOGS);
+  // Don't chase logs while we still need cobble for tools/furnace.
+  if (!seekingCobble(bot, stage)) names.push(...LOGS);
 
   const ids = names.map((name) => bot.registry.blocksByName[name]?.id).filter(Boolean);
   if (!ids.length) return null;
-  return bot.findBlock({ matching: ids, maxDistance: 22 });
+  return bot.findBlock({ matching: ids, maxDistance: 28 });
+}
+
+/** Dig dirt/sand underfoot or look down to reach stone. */
+async function digTowardStone(bot) {
+  await bot.look(bot.entity.yaw, -1.15, false).catch(() => {});
+  const below = bot.blockAt(bot.entity.position.offset(0, -1, 0));
+  const below2 = bot.blockAt(bot.entity.position.offset(0, -2, 0));
+  for (const block of [below, below2, bot.blockAtCursor(5)]) {
+    if (!block || block.name === "air" || block.name === "bedrock") continue;
+    if (STONE_BLOCKS.includes(block.name) || blockPrefersPickaxe(block.name)) {
+      return digBlock(bot, block);
+    }
+    if (SOFT_SURFACE.has(block.name)) {
+      // Soft blocks: dig with whatever; this opens a shaft to stone.
+      if (!bot.canDigBlock(block)) continue;
+      const heldBefore = bot.heldItem?.name ?? null;
+      await gotoNear(bot, block.position, 2, PATH_TIMEOUT_MS);
+      const target = bot.blockAt(block.position) ?? block;
+      if (!target || target.name === "air") continue;
+      await bot.dig(target, true);
+      await sleep(80);
+      return {
+        ok: true,
+        mined: target.name,
+        tunneled: true,
+        heldBefore,
+        tool: bot.heldItem?.name ?? null,
+        prefersPickaxe: false
+      };
+    }
+  }
+  // Walk forward a bit while looking down to find a shaft spot
+  bot.setControlState("forward", true);
+  await sleep(Math.max(MOVE_MS * 2, 120));
+  bot.clearControlStates();
+  return { ok: true, seeking_stone: true, reason: "no_stone_yet" };
 }
 
 async function ensureFurnacePlaced(bot) {
@@ -274,6 +350,71 @@ async function smeltRawIron(bot, count = 1) {
   }
 }
 
+async function equipBestPickaxe(bot) {
+  const picks = bot.inventory.items().filter((item) => item.name.includes("pickaxe"));
+  if (!picks.length) return { ok: false, reason: "no_pickaxe" };
+  const rank = (name) => {
+    if (name.startsWith("netherite_") || name.startsWith("diamond_")) return 4;
+    if (name.startsWith("iron_")) return 3;
+    if (name.startsWith("stone_")) return 2;
+    if (name.startsWith("wooden_") || name.startsWith("golden_")) return 1;
+    return 0;
+  };
+  picks.sort((a, b) => rank(b.name) - rank(a.name));
+  await bot.equip(picks[0], "hand");
+  return { ok: true, equipped: picks[0].name };
+}
+
+async function equipBestAxe(bot) {
+  const axes = bot.inventory.items().filter((item) =>
+    item.name.includes("_axe") && !item.name.includes("pickaxe")
+  );
+  if (!axes.length) return { ok: false, reason: "no_axe" };
+  const rank = (name) => {
+    if (name.startsWith("netherite_") || name.startsWith("diamond_")) return 4;
+    if (name.startsWith("iron_")) return 3;
+    if (name.startsWith("stone_")) return 2;
+    if (name.startsWith("wooden_") || name.startsWith("golden_")) return 1;
+    return 0;
+  };
+  axes.sort((a, b) => rank(b.name) - rank(a.name));
+  await bot.equip(axes[0], "hand");
+  return { ok: true, equipped: axes[0].name };
+}
+
+/** Prefer pickaxe for stone/ore; never a sword. Falls back to axe then pick. */
+async function equipBestTool(bot, blockName = null) {
+  const needsPick = blockName != null && BLOCK_TIER[blockName] != null;
+  const isLog = blockName != null && LOGS.includes(blockName);
+  if (needsPick) return equipBestPickaxe(bot);
+  if (isLog) {
+    const axe = await equipBestAxe(bot);
+    if (axe.ok) return axe;
+  }
+  // Generic: pickaxe first, then axe — never sword for mining/digging
+  const pick = await equipBestPickaxe(bot);
+  if (pick.ok) return pick;
+  const axe = await equipBestAxe(bot);
+  if (axe.ok) return axe;
+  return { ok: false, reason: "no_tool" };
+}
+
+function isSwordName(name) {
+  return Boolean(name && name.includes("sword"));
+}
+
+function isPickaxeName(name) {
+  return Boolean(name && name.includes("pickaxe"));
+}
+
+function blockPrefersPickaxe(blockName) {
+  if (!blockName) return false;
+  if (BLOCK_TIER[blockName] != null) return true;
+  return /^(stone|cobblestone|deepslate|granite|diorite|andesite|tuff|netherrack|basalt|blackstone|obsidian|_ore$)/.test(blockName)
+    || blockName.endsWith("_ore")
+    || blockName.includes("ore");
+}
+
 async function digBlock(bot, block) {
   if (!block || block.name === "air") return { ok: false, reason: "no_block" };
   if (BLOCK_TIER[block.name] != null && !canMineBlock(bot, block.name)) {
@@ -281,9 +422,25 @@ async function digBlock(bot, block) {
   }
   if (!bot.canDigBlock(block)) return { ok: false, reason: "cannot_dig" };
 
-  // Equip best pick before mining ores/stone
-  if (BLOCK_TIER[block.name] != null) {
-    await equipBestTool(bot);
+  const heldBefore = bot.heldItem?.name ?? null;
+  const wantsPick = BLOCK_TIER[block.name] != null || blockPrefersPickaxe(block.name);
+
+  // Stone/ore MUST be mined with a pickaxe — refuse bare-hand/sword digs.
+  if (wantsPick) {
+    const equipped = await equipBestPickaxe(bot);
+    if (!equipped.ok || !isPickaxeName(bot.heldItem?.name)) {
+      return {
+        ok: false,
+        reason: "need_pickaxe",
+        wasted: true,
+        heldBefore,
+        prefersPickaxe: true
+      };
+    }
+  } else if (LOGS.includes(block.name)) {
+    await equipBestAxe(bot);
+  } else if (isSwordName(heldBefore)) {
+    await equipBestTool(bot, block.name);
   }
 
   const digPos = block.position.clone();
@@ -292,28 +449,104 @@ async function digBlock(bot, block) {
   const target = bot.blockAt(digPos) ?? block;
   if (!target || target.name === "air") {
     const picked = await collectNearbyDrops(bot, { budgetMs: COLLECT_BUDGET_MS });
-    return picked > 0 ? { ok: true, picked } : { ok: false, reason: "block_gone" };
+    return picked > 0
+      ? { ok: true, picked, heldBefore, tool: bot.heldItem?.name ?? null }
+      : { ok: false, reason: "block_gone", heldBefore };
   }
   if (BLOCK_TIER[target.name] != null && !canMineBlock(bot, target.name)) {
-    return { ok: false, reason: "need_better_pickaxe", wasted: true };
+    return { ok: false, reason: "need_better_pickaxe", wasted: true, heldBefore };
   }
-  if (!bot.canDigBlock(target)) return { ok: false, reason: "cannot_dig" };
+  if (!bot.canDigBlock(target)) return { ok: false, reason: "cannot_dig", heldBefore };
 
+  // Re-equip pick after pathing — hotbar often changes while walking.
+  if (blockPrefersPickaxe(target.name) || BLOCK_TIER[target.name] != null) {
+    await equipBestPickaxe(bot);
+    if (!isPickaxeName(bot.heldItem?.name)) {
+      return {
+        ok: false,
+        reason: "need_pickaxe",
+        wasted: true,
+        heldBefore,
+        prefersPickaxe: true
+      };
+    }
+  }
+
+  const tool = bot.heldItem?.name ?? null;
   await bot.dig(target, true);
   await sleep(80);
   const picked = await collectNearbyDrops(bot);
-  return { ok: true, picked, mined: target.name };
+  return {
+    ok: true,
+    picked,
+    mined: target.name,
+    tool,
+    heldBefore,
+    minedWithSword: isSwordName(heldBefore) || isSwordName(tool),
+    minedWithPickaxe: isPickaxeName(tool),
+    prefersPickaxe: blockPrefersPickaxe(target.name)
+  };
 }
 
-async function digLooking(bot) {
+async function digLooking(bot, state = {}) {
+  const stage = Number(state.stage ?? 0);
+  const wantCobble = seekingCobble(bot, stage);
+
+  // Cobble stage: ignore surface dirt at cursor — go for stone or dig down.
+  if (wantCobble) {
+    const stone = findStoneTarget(bot, 36);
+    if (stone) return digBlock(bot, stone);
+    return digTowardStone(bot);
+  }
+
   let block = bot.blockAtCursor(4);
   if (!block || block.name === "air" || block.name === "water" || block.name === "lava") {
     const picked = await collectNearbyDrops(bot, { budgetMs: Math.min(600, COLLECT_BUDGET_MS) });
     if (picked > 0) return { ok: true, picked };
-    block = findMineTarget(bot);
-    if (!block) return { ok: false, reason: "no_block" };
+    block = findMineTarget(bot, stage);
+    if (!block) {
+      const explore = await maybeExploreForWood(bot);
+      if (explore) return explore;
+      return { ok: false, reason: "no_block" };
+    }
+  }
+  // If cursor is soft surface but we have a pick and see stone, prefer stone.
+  if (hasPickaxe(bot) && block && SOFT_SURFACE.has(block.name)) {
+    const stone = findStoneTarget(bot, 24);
+    if (stone) return digBlock(bot, stone);
   }
   return digBlock(bot, block);
+}
+
+/** Sprint a short burst away when stuck in a treeless / woodless area. */
+async function maybeExploreForWood(bot) {
+  const dim = bot.game?.dimension;
+  if (["the_nether", "minecraft:the_nether", "the_end", "minecraft:the_end"].includes(dim)) {
+    return null;
+  }
+  const counts = bot.inventory.items();
+  const hasWood = counts.some((i) =>
+    LOGS.includes(i.name) || i.name.endsWith("_planks") || i.name === "crafting_table"
+  );
+  if (hasWood) return null;
+  const ctx = needsWoodExplore(bot);
+  if (!ctx.treelessBiome && ctx.logsNearby) return null;
+
+  // Bias turn toward a new heading so we don't walk in circles every step
+  const turn = (Math.random() - 0.5) * (Math.PI * 0.9);
+  await bot.look(bot.entity.yaw + turn, 0, false).catch(() => {});
+  bot.setControlState("sprint", true);
+  bot.setControlState("forward", true);
+  bot.setControlState("jump", Math.random() < 0.35);
+  await sleep(Math.max(MOVE_MS * 4, 220));
+  bot.clearControlStates();
+  return {
+    ok: true,
+    explored: true,
+    biome: ctx.biome,
+    treelessBiome: ctx.treelessBiome,
+    logsNearby: ctx.logsNearby
+  };
 }
 
 async function placeHeld(bot) {
@@ -747,23 +980,6 @@ async function craftNext(bot, craftCursor) {
   return { ok: false, reason: "no_craftable", bestPlank, bestCount: samePlanks, sticks };
 }
 
-async function equipBestTool(bot) {
-  const tools = bot.inventory.items().filter((item) =>
-    item.name.includes("pickaxe") || item.name.includes("axe") || item.name.includes("sword")
-  );
-  if (!tools.length) return { ok: false, reason: "no_tool" };
-  const rank = (name) => {
-    if (name.startsWith("netherite_") || name.startsWith("diamond_")) return 4;
-    if (name.startsWith("iron_")) return 3;
-    if (name.startsWith("stone_")) return 2;
-    if (name.startsWith("wooden_") || name.startsWith("golden_")) return 1;
-    return 0;
-  };
-  tools.sort((a, b) => rank(b.name) - rank(a.name));
-  await bot.equip(tools[0], "hand");
-  return { ok: true, equipped: tools[0].name };
-}
-
 async function equipItem(bot, name) {
   const item = bot.inventory.items().find((i) => i.name === name);
   if (!item) return false;
@@ -867,7 +1083,7 @@ async function executePrimitive(bot, name, state) {
       await hold(bot, "jump", 120);
       return { ok: true };
     case "DIG_LOOKING":
-      return digLooking(bot);
+      return digLooking(bot, state);
     case "PLACE_HELD":
       return placeHeld(bot);
     case "ATTACK": {
@@ -947,9 +1163,17 @@ async function executePrimitive(bot, name, state) {
       if (!block || block.name === "air") {
         const portal = await enterNearestPortal(bot);
         if (portal) return { ...portal, via: "portal" };
-        block = findMineTarget(bot);
+        block = findMineTarget(bot, state.stage ?? 0);
       }
-      if (!block) return { ok: false, reason: "no_look_target" };
+      if (!block) {
+        if (seekingCobble(bot, state.stage ?? 0)) {
+          const down = await digTowardStone(bot);
+          if (down) return { ...down, via: "path_seek_stone" };
+        }
+        const explore = await maybeExploreForWood(bot);
+        if (explore) return { ...explore, via: "path_explore" };
+        return { ok: false, reason: "no_look_target" };
+      }
       const ok = await gotoNear(bot, block.position, 1, PATH_TIMEOUT_MS);
       return ok ? { ok: true, target: block.name } : { ok: false, reason: "path_timeout" };
     }

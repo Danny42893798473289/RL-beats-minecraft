@@ -7,6 +7,26 @@ const TRACKED_ITEMS = [
   "blaze_rod", "ender_pearl", "ender_eye"
 ];
 
+/** Biomes that rarely/never have trees — explore to find wood. */
+const TREELESS_BIOMES = new Set([
+  "desert", "desert_hills", "desert_lakes",
+  "beach", "snowy_beach", "stony_shore",
+  "ocean", "deep_ocean", "warm_ocean", "lukewarm_ocean", "cold_ocean", "frozen_ocean",
+  "deep_warm_ocean", "deep_lukewarm_ocean", "deep_cold_ocean", "deep_frozen_ocean",
+  "river", "frozen_river",
+  "badlands", "eroded_badlands",
+  "ice_spikes", "snowy_plains", "ice_plains",
+  "mushroom_fields", "mushroom_field_shore",
+  "stony_peaks", "jagged_peaks", "frozen_peaks",
+  "dripstone_caves", "deep_dark",
+  "nether_wastes", "soul_sand_valley", "basalt_deltas", "crimson_forest", "warped_forest"
+]);
+
+const LOG_BLOCK_NAMES = [
+  "oak_log", "birch_log", "spruce_log", "jungle_log", "acacia_log",
+  "dark_oak_log", "mangrove_log", "cherry_log", "pale_oak_log"
+];
+
 export const OBSERVATION_SIZE = 64;
 
 function countItems(bot) {
@@ -17,12 +37,53 @@ function countItems(bot) {
   return counts;
 }
 
+function biomeName(bot) {
+  try {
+    const block = bot.blockAt(bot.entity?.position);
+    return block?.biome?.name ?? "";
+  } catch {
+    return "";
+  }
+}
+
+function logsNearby(bot, maxDistance = 32) {
+  try {
+    const ids = LOG_BLOCK_NAMES
+      .map((name) => bot.registry?.blocksByName?.[name]?.id)
+      .filter((id) => id != null);
+    if (!ids.length) return false;
+    return Boolean(bot.findBlock({ matching: ids, maxDistance }));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * True when the bot should leave this area to find trees
+ * (desert / ocean / badlands / etc., or no logs in sight).
+ */
+export function needsWoodExplore(bot) {
+  const name = biomeName(bot);
+  const treeless = TREELESS_BIOMES.has(name)
+    || name.includes("desert")
+    || (name.includes("ocean") && !name.includes("forest"))
+    || (name.includes("badlands") && !name.includes("wooded"));
+  const nearby = logsNearby(bot, 28);
+  return {
+    biome: name,
+    treelessBiome: treeless,
+    logsNearby: nearby,
+    needsExplore: treeless || !nearby
+  };
+}
+
 export const MAX_STAGE = 19;
 
 export function snapshot(bot, stage = 1, inventedCount = 0, maxInvented = 32, extra = {}) {
   const counts = countItems(bot);
   const pos = bot.entity?.position;
   const yaw = ((bot.entity?.yaw ?? 0) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2);
+  const explore = needsWoodExplore(bot);
   const values = [
     (bot.health ?? 20) / 20,
     (bot.food ?? 20) / 20,
@@ -47,7 +108,10 @@ export function snapshot(bot, stage = 1, inventedCount = 0, maxInvented = 32, ex
     Math.min(nearby.filter((e) => e.type === "player").length, 8) / 8,
     bot.targetDigBlock ? 1 : 0,
     bot.heldItem ? 1 : 0,
-    extra.dragon_killed ? 1 : 0
+    extra.dragon_killed ? 1 : 0,
+    explore.treelessBiome ? 1 : 0,
+    explore.logsNearby ? 1 : 0,
+    explore.needsExplore ? 1 : 0
   );
 
   while (values.length < OBSERVATION_SIZE) values.push(0);

@@ -8,7 +8,7 @@ import pathfinderPkg from "mineflayer-pathfinder";
 import { Rcon } from "rcon-client";
 import { WebSocketServer } from "ws";
 import { SkillInventor } from "./discovery.js";
-import { milestoneState, OBSERVATION_SIZE, snapshot } from "./observations.js";
+import { milestoneState, OBSERVATION_SIZE, snapshot, needsWoodExplore } from "./observations.js";
 import {
   ACTION_SIZE,
   actionNames,
@@ -17,6 +17,7 @@ import {
   PRIMITIVES
 } from "./skills.js";
 import { botStatus } from "./status.js";
+import { installDamageReaction } from "./combat.js";
 
 const { pathfinder, Movements } = pathfinderPkg;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -70,8 +71,11 @@ let stageCompletions = 0;
 /** Ender Dragon kill tracking (reset each episode). */
 let dragonSeen = false;
 let dragonKilled = false;
+let disposeDamageReaction = null;
+/** Horizontal position for treeless-biome explore rewards. */
+let lastExplorePos = null;
 const inventor = new SkillInventor();
-const controlState = { hotbar: 0, craftCursor: 0 };
+const controlState = { hotbar: 0, craftCursor: 0, stage: config.initialStage };
 /** Fine-grained tech-tree goals, one per stage id (0..19). */
 const STAGE_GOALS = [
   "log", "planks", "crafting_table", "wooden_pickaxe", "cobblestone",
@@ -217,6 +221,12 @@ async function ensureViewer() {
 function createBot() {
   ready = false;
   dead = false;
+  try {
+    disposeDamageReaction?.();
+  } catch {
+    // ignore
+  }
+  disposeDamageReaction = null;
   bot = mineflayer.createBot({
     host: config.mcHost,
     port: config.mcPort,
@@ -233,6 +243,10 @@ function createBot() {
     bot.pathfinder.setMovements(movements);
     ready = true;
     console.log(`Bot ${config.username} spawned on ${config.mcHost}:${config.mcPort} (stage ${stage} → ${stageGoalName()})`);
+    disposeDamageReaction = installDamageReaction(bot, {
+      // Default flee; set DAMAGE_REACTION=aim to face the attacker instead.
+      isAlive: () => ready && !dead
+    });
     ensureViewer().catch(() => {});
     await opAllNonBotPlayers();
   });
@@ -256,6 +270,12 @@ function createBot() {
   });
   bot.on("end", () => {
     ready = false;
+    try {
+      disposeDamageReaction?.();
+    } catch {
+      // ignore
+    }
+    disposeDamageReaction = null;
     if (!suppressReconnect) setTimeout(createBot, 3000);
   });
   bot.on("kicked", (reason) => console.error("Kicked:", reason));
@@ -486,10 +506,12 @@ async function resetEpisode(requestedStage = 1) {
   controlState.hotbar = 0;
   controlState.craftCursor = 0;
   stage = Math.max(0, Math.min(MAX_STAGE, Number(requestedStage)));
+  controlState.stage = stage;
   episodeStep = 0;
   dead = false;
   dragonSeen = false;
   dragonKilled = false;
+  lastExplorePos = bot?.entity?.position?.clone?.() ?? null;
   episodeResets += 1;
 
   let wiped = false;
@@ -541,7 +563,7 @@ function stageSpeedBonus(steps) {
 function rewardFor(before, after, result, inventedNow, healthBefore, healthAfter) {
   const weights = {
     log: 1.5, planks: 2, crafting_table: 3, wooden_pickaxe: 8,
-    cobblestone: 1, stone_pickaxe: 10, furnace: 4,
+    cobblestone: 4, stone_pickaxe: 10, furnace: 4,
     raw_iron: 6, iron_ingot: 10, iron_pickaxe: 16,
     diamond: 22, diamond_pickaxe: 36,
     obsidian: 30, flint_and_steel: 24,
@@ -595,6 +617,85 @@ function rewardFor(before, after, result, inventedNow, healthBefore, healthAfter
     reward += 1.5;
   }
   if (result.mined === "obsidian") reward += 3;
+
+  // Desert / treeless (or no logs in sight): encourage exploring to find wood.
+  const inOverworld = !["the_nether", "minecraft:the_nether", "the_end", "minecraft:the_end"]
+    .includes(bot.game?.dimension);
+  const exploreCtx = needsWoodExplore(bot);
+  const hasWoodStuff = Boolean(after.log || after.planks || after.crafting_table);
+  const shouldSeekWood = inOverworld && !hasWoodStuff
+    && (exploreCtx.treelessBiome || !exploreCtx.logsNearby);
+  if (shouldSeekWood) {
+    const moveActions = new Set([
+      "FORWARD", "BACK", "STRAFE_LEFT", "STRAFE_RIGHT", "JUMP", "PATH_TO_LOOK", "TURN_LEFT", "TURN_RIGHT"
+    ]);
+    const actionName = result.name ?? "";
+    if (result.explored) {
+      reward += exploreCtx.treelessBiome ? 0.18 : 0.12;
+    }
+    const pos = bot.entity?.position;
+    if (pos && lastExplorePos) {
+      const dx = pos.x - lastExplorePos.x;
+      const dz = pos.z - lastExplorePos.z;
+      const horiz = Math.sqrt(dx * dx + dz * dz);
+      if (horiz > 1.2 && moveActions.has(actionName)) {
+        reward += Math.min(0.22, horiz * 0.06);
+      }
+    }
+    if (actionName === "WAIT") reward -= 0.05;
+    if (actionName === "DIG_LOOKING" && !result.mined && !result.explored) reward -= 0.04;
+    if (pos) lastExplorePos = pos.clone();
+  } else if (bot.entity?.position) {
+    lastExplorePos = bot.entity.position.clone();
+  }
+
+  // Tool hygiene: mine stone/ore with a pickaxe; punish digging with a sword.
+  if (result.mined || result.name === "DIG_LOOKING") {
+    const heldSword = Boolean(result.minedWithSword)
+      || (typeof result.heldBefore === "string" && result.heldBefore.includes("sword"))
+      || (typeof result.tool === "string" && result.tool.includes("sword"));
+    const usedPick = Boolean(result.minedWithPickaxe)
+      || (typeof result.heldBefore === "string" && result.heldBefore.includes("pickaxe"))
+      || (typeof result.tool === "string" && result.tool.includes("pickaxe"));
+    const wantsPick = result.prefersPickaxe
+      || (result.mined && (
+        result.mined.includes("ore")
+        || result.mined.includes("stone")
+        || result.mined.includes("cobble")
+        || result.mined === "obsidian"
+        || result.mined === "netherrack"
+      ));
+
+    if (heldSword) {
+      // Extra punish: swords are for combat, not mining.
+      reward -= wantsPick ? 0.55 : 0.35;
+    } else if (result.mined && wantsPick && usedPick) {
+      reward += 0.12;
+      // Extra encourage: stone→cobble with a pickaxe
+      if (
+        result.mined === "stone"
+        || result.mined === "cobblestone"
+        || result.mined === "deepslate"
+        || result.mined === "cobbled_deepslate"
+        || result.mined === "granite"
+        || result.mined === "diorite"
+        || result.mined === "andesite"
+        || result.mined === "tuff"
+      ) {
+        reward += 0.35;
+      }
+    } else if (result.mined && wantsPick && !usedPick) {
+      // Digging stone/ore barehanded or with the wrong tool.
+      reward -= 0.25;
+    }
+    if (result.reason === "need_pickaxe" && result.prefersPickaxe) {
+      reward -= 0.2;
+    }
+    // Reward tunneling down toward stone during cobble stage
+    if (result.tunneled || result.seeking_stone) {
+      reward += 0.08;
+    }
+  }
 
   // Sticky milestones: once earned this episode, cannot re-trigger by dig/re-place
   for (const [key, weight] of Object.entries(weights)) {

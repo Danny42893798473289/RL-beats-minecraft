@@ -147,6 +147,7 @@ start_bridge() {
     export MC_SERVER_DIR="$server_dir"
     export WIPE_EVERY_EPISODES="$WIPE_EVERY_EPISODES"
     export ENABLE_VIEWER="$ENABLE_VIEWER"
+    export DAMAGE_REACTION="${DAMAGE_REACTION:-flee}"
     export STAGE="${STAGE:-2}"
     export ACTION_TIMEOUT_MS="$ACTION_TIMEOUT_MS"
     export EPISODE_STEPS="$EPISODE_STEPS"
