@@ -1,9 +1,13 @@
 {
-  "num_bots": 10,
-  "stage": 4,
+  "num_bots": 15,
+  "stage": 6,
   "wipe_every_episodes": 20,
-  "enable_viewer": true,
+  "enable_viewer": false,
   "damage_reaction": "flee",
+  "seed_wooden_pickaxe": true,
+  "seed_wooden_pickaxe_stages": [4, 5, 6, 7, 8],
+  "seed_stone_craft_kit": false,
+  "seed_stone_craft_kit_stages": [5],
   "shared_server": true,
   "pad_spacing": 1000,
   "mc_xms": "512M",
@@ -23,5 +27,5 @@
   "mc_port": 25565,
   "rcon_port": 25575,
   "timesteps": 1000000,
-  "save_freq": 2000
+  "save_freq": 128
 }

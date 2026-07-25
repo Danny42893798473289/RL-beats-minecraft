@@ -13,6 +13,10 @@ DEFAULTS = {
     "wipe_every_episodes": 25,
     "enable_viewer": True,
     "damage_reaction": "flee",
+    "seed_wooden_pickaxe": True,
+    "seed_wooden_pickaxe_stages": [4, 5, 6, 7, 8],
+    "seed_stone_craft_kit": True,
+    "seed_stone_craft_kit_stages": [5],
     "shared_server": True,
     "pad_spacing": 1000,
     "mc_xms": "512M",
@@ -52,6 +56,14 @@ def as_shell(cfg: dict) -> str:
         "WIPE_EVERY_EPISODES": cfg["wipe_every_episodes"],
         "ENABLE_VIEWER": "1" if cfg["enable_viewer"] else "0",
         "DAMAGE_REACTION": cfg.get("damage_reaction", "flee"),
+        "SEED_WOODEN_PICKAXE": "1" if cfg.get("seed_wooden_pickaxe", True) else "0",
+        "SEED_WOODEN_PICKAXE_STAGES": ",".join(
+            str(int(s)) for s in cfg.get("seed_wooden_pickaxe_stages", [4, 5, 6, 7, 8])
+        ),
+        "SEED_STONE_CRAFT_KIT": "1" if cfg.get("seed_stone_craft_kit", True) else "0",
+        "SEED_STONE_CRAFT_KIT_STAGES": ",".join(
+            str(int(s)) for s in cfg.get("seed_stone_craft_kit_stages", [5])
+        ),
         "SHARED_SERVER": "1" if cfg["shared_server"] else "0",
         "PAD_SPACING": cfg["pad_spacing"],
         "MC_XMS": cfg["mc_xms"],

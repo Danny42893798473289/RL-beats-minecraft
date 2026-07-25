@@ -249,23 +249,30 @@ function findMineTarget(bot, stage = 0) {
 
 /** Dig dirt/sand underfoot or look down to reach stone. */
 async function digTowardStone(bot) {
-  await bot.look(bot.entity.yaw, -1.15, false).catch(() => {});
-  const below = bot.blockAt(bot.entity.position.offset(0, -1, 0));
-  const below2 = bot.blockAt(bot.entity.position.offset(0, -2, 0));
-  for (const block of [below, below2, bot.blockAtCursor(5)]) {
-    if (!block || block.name === "air" || block.name === "bedrock") continue;
+  await bot.look(bot.entity.yaw, -1.2, false).catch(() => {});
+  // Prefer a vertical shaft: feet, then 2–3 blocks down, then cursor.
+  const offsets = [
+    [0, -1, 0], [0, -2, 0], [0, -3, 0],
+    [1, -1, 0], [-1, -1, 0], [0, -1, 1], [0, -1, -1]
+  ];
+  const blocks = offsets
+    .map(([x, y, z]) => bot.blockAt(bot.entity.position.offset(x, y, z)))
+    .concat([bot.blockAtCursor(5)]);
+
+  for (const block of blocks) {
+    if (!block || block.name === "air" || block.name === "bedrock" || block.name === "water" || block.name === "lava") {
+      continue;
+    }
     if (STONE_BLOCKS.includes(block.name) || blockPrefersPickaxe(block.name)) {
       return digBlock(bot, block);
     }
     if (SOFT_SURFACE.has(block.name)) {
-      // Soft blocks: dig with whatever; this opens a shaft to stone.
       if (!bot.canDigBlock(block)) continue;
       const heldBefore = bot.heldItem?.name ?? null;
-      await gotoNear(bot, block.position, 2, PATH_TIMEOUT_MS);
       const target = bot.blockAt(block.position) ?? block;
       if (!target || target.name === "air") continue;
       await bot.dig(target, true);
-      await sleep(80);
+      await sleep(60);
       return {
         ok: true,
         mined: target.name,
@@ -276,9 +283,10 @@ async function digTowardStone(bot) {
       };
     }
   }
-  // Walk forward a bit while looking down to find a shaft spot
+  // Sidestep and keep looking down to find uncovered stone.
   bot.setControlState("forward", true);
-  await sleep(Math.max(MOVE_MS * 2, 120));
+  bot.setControlState("sprint", true);
+  await sleep(Math.max(MOVE_MS * 3, 160));
   bot.clearControlStates();
   return { ok: true, seeking_stone: true, reason: "no_stone_yet" };
 }

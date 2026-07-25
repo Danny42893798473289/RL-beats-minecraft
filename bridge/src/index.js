@@ -48,6 +48,17 @@ const config = {
   wipeEvery: Number(process.env.WIPE_EVERY_EPISODES ?? 15),
   softResetSleepMs: Number(process.env.SOFT_RESET_SLEEP_MS ?? 250),
   enableViewer: process.env.ENABLE_VIEWER !== "0" && process.env.ENABLE_VIEWER !== "false",
+  seedWoodenPickaxe: process.env.SEED_WOODEN_PICKAXE !== "0" && process.env.SEED_WOODEN_PICKAXE !== "false",
+  seedWoodenPickaxeStages: String(process.env.SEED_WOODEN_PICKAXE_STAGES ?? "4,5,6,7,8")
+    .split(",")
+    .map((s) => Number(s.trim()))
+    .filter((n) => Number.isInteger(n) && n >= 0 && n <= 19),
+  // Stage 5 scaffold: cobble+sticks+table so the bottleneck is crafting the stone pick.
+  seedStoneCraftKit: process.env.SEED_STONE_CRAFT_KIT !== "0" && process.env.SEED_STONE_CRAFT_KIT !== "false",
+  seedStoneCraftKitStages: String(process.env.SEED_STONE_CRAFT_KIT_STAGES ?? "5")
+    .split(",")
+    .map((s) => Number(s.trim()))
+    .filter((n) => Number.isInteger(n) && n >= 0 && n <= 19),
   initialStage: Math.max(0, Math.min(19, Number(process.env.STAGE ?? 2))),
   serverDir: process.env.MC_SERVER_DIR
     ?? path.join(PROJECT_ROOT, "runtime", "mc0")
@@ -94,21 +105,22 @@ function isBotUsername(username) {
   return /^rl_bot_\d+$/i.test(username) || username === config.username;
 }
 
-async function opNonBotPlayer(username) {
+async function spectatorNonBotPlayer(username) {
   if (!username || isBotUsername(username)) return;
   try {
     const client = await getRcon();
-    await client.send(`op ${username}`);
-    console.log(`Granted op to ${username}`);
+    await client.send(`deop ${username}`);
+    await client.send(`gamemode spectator ${username}`);
+    console.log(`Deopped + spectator: ${username}`);
   } catch (error) {
-    console.warn(`Failed to op ${username}:`, error.message);
+    console.warn(`Failed to spectator ${username}:`, error.message);
   }
 }
 
-async function opAllNonBotPlayers() {
+async function spectatorAllNonBotPlayers() {
   if (!bot?.players) return;
   for (const username of Object.keys(bot.players)) {
-    await opNonBotPlayer(username);
+    await spectatorNonBotPlayer(username);
   }
 }
 
@@ -199,7 +211,7 @@ async function ensureViewer() {
     const app = mineflayerViewer(bot, {
       port: config.viewerPort,
       firstPerson: true,
-      viewDistance: 2
+      viewDistance: 1
     });
     app?.server?.on?.("error", (error) => {
       console.warn("Viewer server error (ignored):", error.message);
@@ -248,10 +260,10 @@ function createBot() {
       isAlive: () => ready && !dead
     });
     ensureViewer().catch(() => {});
-    await opAllNonBotPlayers();
+    await spectatorAllNonBotPlayers();
   });
   bot.on("playerJoined", (player) => {
-    void opNonBotPlayer(player.username);
+    void spectatorNonBotPlayer(player.username);
   });
   bot.on("death", () => {
     dead = true;
@@ -483,6 +495,22 @@ async function softReset() {
     }
     await client.send(`effect give ${name} resistance 5 255 true`);
     await client.send(`effect give ${name} slow_falling 3 0 true`);
+    // Optional curriculum scaffold: start with a wooden pickaxe on selected stages.
+    // Stages: 4 cobble, 5 stone_pickaxe, 6 furnace, 7 raw_iron, 8 iron_ingot
+    if (
+      config.seedWoodenPickaxe
+      && config.seedWoodenPickaxeStages.includes(stage)
+    ) {
+      await client.send(`give ${name} minecraft:wooden_pickaxe 1`);
+    }
+    if (
+      config.seedStoneCraftKit
+      && config.seedStoneCraftKitStages.includes(stage)
+    ) {
+      await client.send(`give ${name} minecraft:cobblestone 3`);
+      await client.send(`give ${name} minecraft:stick 2`);
+      await client.send(`give ${name} minecraft:crafting_table 1`);
+    }
     if (!config.sharedServer || config.botRank === 0) {
       await client.send(`time set day`);
       await client.send(`weather clear`);
@@ -560,10 +588,25 @@ function stageSpeedBonus(steps) {
   return Math.max(0.5, 15 * ((1 - ratio) ** 1.5));
 }
 
-function rewardFor(before, after, result, inventedNow, healthBefore, healthAfter) {
+function countInv(name) {
+  if (!bot?.inventory) return 0;
+  return bot.inventory.items()
+    .filter((item) => item.name === name)
+    .reduce((n, item) => n + item.count, 0);
+}
+
+const LOGS_FOR_REWARD = new Set([
+  "oak_log", "birch_log", "spruce_log", "jungle_log", "acacia_log",
+  "dark_oak_log", "mangrove_log", "cherry_log", "pale_oak_log"
+]);
+
+function rewardFor(before, after, result, inventedNow, healthBefore, healthAfter, cobbleBefore = 0) {
   const weights = {
     log: 1.5, planks: 2, crafting_table: 3, wooden_pickaxe: 8,
-    cobblestone: 4, stone_pickaxe: 10, furnace: 4,
+    // Cobble is the stage-4 goal — make the milestone loud.
+    cobblestone: 14,
+    // Stage-5 goal — louder than cobble so crafting wins over mining forever.
+    stone_pickaxe: 22, furnace: 4,
     raw_iron: 6, iron_ingot: 10, iron_pickaxe: 16,
     diamond: 22, diamond_pickaxe: 36,
     obsidian: 30, flint_and_steel: 24,
@@ -579,7 +622,7 @@ function rewardFor(before, after, result, inventedNow, healthBefore, healthAfter
 
   // Craft bonuses only for real item outputs
   if (result.crafted === "wooden_pickaxe") reward += 2;
-  if (result.crafted === "stone_pickaxe") reward += 2;
+  if (result.crafted === "stone_pickaxe") reward += 10;
   if (result.crafted?.endsWith("_planks") && result.amount >= 4) reward += 0.4;
   if (result.reason === "need_more_planks" || result.reason === "need_more_logs") reward -= 0.02;
   if (result.crafted === "crafting_table") reward += 1;
@@ -618,12 +661,44 @@ function rewardFor(before, after, result, inventedNow, healthBefore, healthAfter
   }
   if (result.mined === "obsidian") reward += 3;
 
+  // Dense cobble shaping: every cobble gained counts (not only first milestone).
+  // Stage 5: once they have enough for a stone pick (≥3), stop paying for more cobble
+  // so the policy shifts to craft instead of mining forever.
+  const cobbleAfter = countInv("cobblestone") + countInv("cobbled_deepslate");
+  const cobbleGain = Math.max(0, cobbleAfter - cobbleBefore);
+  if (cobbleGain > 0) {
+    const readyForStonePick = stage === 5 && cobbleBefore >= 3 && !after.stone_pickaxe;
+    if (readyForStonePick) {
+      reward -= cobbleGain * 0.35;
+    } else {
+      reward += cobbleGain * (stage === 4 ? 2.5 : stage === 5 ? 1.6 : 1.2);
+    }
+  }
+
+  // Stage 5: push the craft path (sticks / table / stone pick) once cobble exists.
+  if (stage === 5 && !after.stone_pickaxe) {
+    const sticks = countInv("stick");
+    const actionName = result.name ?? "";
+    if (cobbleAfter >= 3) {
+      if (result.crafted === "stick" && sticks <= 8) reward += 1.2;
+      if (result.crafted === "crafting_table") reward += 1.5;
+      if (result.placed === "crafting_table" && result.newlyPlaced) reward += 1.0;
+      if (result.via === "use_table" || result.via === "path_to_table") reward += 0.35;
+      if (actionName === "CRAFT_NEXT") reward += 0.35;
+      if (actionName === "WAIT") reward -= 0.08;
+      if (actionName === "DIG_LOOKING" && result.mined && !result.crafted) reward -= 0.12;
+    } else if (cobbleAfter > 0 && cobbleAfter < 3) {
+      // Still short of 3 — keep light dig-down pressure.
+      if (result.tunneled || result.seeking_stone) reward += 0.15;
+    }
+  }
+
   // Desert / treeless (or no logs in sight): encourage exploring to find wood.
   const inOverworld = !["the_nether", "minecraft:the_nether", "the_end", "minecraft:the_end"]
     .includes(bot.game?.dimension);
   const exploreCtx = needsWoodExplore(bot);
   const hasWoodStuff = Boolean(after.log || after.planks || after.crafting_table);
-  const shouldSeekWood = inOverworld && !hasWoodStuff
+  const shouldSeekWood = inOverworld && !hasWoodStuff && stage < 4
     && (exploreCtx.treelessBiome || !exploreCtx.logsNearby);
   if (shouldSeekWood) {
     const moveActions = new Set([
@@ -649,51 +724,54 @@ function rewardFor(before, after, result, inventedNow, healthBefore, healthAfter
     lastExplorePos = bot.entity.position.clone();
   }
 
+  // Cobble stage: look/dig down, mine stone with pick, don't waste time on logs.
+  if (stage === 4 || (stage >= 4 && stage <= 6 && !after.cobblestone)) {
+    const actionName = result.name ?? "";
+    if (actionName === "LOOK_DOWN") reward += 0.06;
+    if (actionName === "LOOK_UP") reward -= 0.03;
+    if (result.tunneled) reward += 0.25;
+    if (result.seeking_stone) reward += 0.12;
+    if (result.mined && LOGS_FOR_REWARD.has(result.mined)) reward -= 0.15;
+    if (actionName === "WAIT") reward -= 0.06;
+  }
+
   // Tool hygiene: mine stone/ore with a pickaxe; punish digging with a sword.
   if (result.mined || result.name === "DIG_LOOKING") {
     const heldSword = Boolean(result.minedWithSword)
       || (typeof result.heldBefore === "string" && result.heldBefore.includes("sword"))
       || (typeof result.tool === "string" && result.tool.includes("sword"));
     const usedPick = Boolean(result.minedWithPickaxe)
-      || (typeof result.heldBefore === "string" && result.heldBefore.includes("pickaxe"))
       || (typeof result.tool === "string" && result.tool.includes("pickaxe"));
+    const stoneLike = result.mined && (
+      result.mined === "stone"
+      || result.mined === "cobblestone"
+      || result.mined === "deepslate"
+      || result.mined === "cobbled_deepslate"
+      || result.mined === "granite"
+      || result.mined === "diorite"
+      || result.mined === "andesite"
+      || result.mined === "tuff"
+    );
     const wantsPick = result.prefersPickaxe
+      || stoneLike
       || (result.mined && (
         result.mined.includes("ore")
-        || result.mined.includes("stone")
-        || result.mined.includes("cobble")
         || result.mined === "obsidian"
         || result.mined === "netherrack"
       ));
 
     if (heldSword) {
-      // Extra punish: swords are for combat, not mining.
       reward -= wantsPick ? 0.55 : 0.35;
+    } else if (result.mined && stoneLike && usedPick) {
+      // Strong shaping: this is the cobble win path.
+      reward += stage === 4 ? 1.8 : 0.8;
     } else if (result.mined && wantsPick && usedPick) {
-      reward += 0.12;
-      // Extra encourage: stone→cobble with a pickaxe
-      if (
-        result.mined === "stone"
-        || result.mined === "cobblestone"
-        || result.mined === "deepslate"
-        || result.mined === "cobbled_deepslate"
-        || result.mined === "granite"
-        || result.mined === "diorite"
-        || result.mined === "andesite"
-        || result.mined === "tuff"
-      ) {
-        reward += 0.35;
-      }
+      reward += 0.15;
     } else if (result.mined && wantsPick && !usedPick) {
-      // Digging stone/ore barehanded or with the wrong tool.
-      reward -= 0.25;
+      reward -= 0.3;
     }
     if (result.reason === "need_pickaxe" && result.prefersPickaxe) {
       reward -= 0.2;
-    }
-    // Reward tunneling down toward stone during cobble stage
-    if (result.tunneled || result.seeking_stone) {
-      reward += 0.08;
     }
   }
 
@@ -731,6 +809,7 @@ async function step(action) {
     throw new Error("bot_not_ready");
   });
   const before = milestoneState(bot, externalMilestones());
+  const cobbleBefore = countInv("cobblestone") + countInv("cobbled_deepslate");
   const healthBefore = bot.health ?? 20;
   let timer;
   const timeout = new Promise((_, reject) => {
@@ -762,10 +841,13 @@ async function step(action) {
   const truncated = episodeStep >= stageStepLimit();
   const damageTaken = Math.max(0, healthBefore - healthAfter);
   const speedBonus = success ? stageSpeedBonus(episodeStep) : 0;
+  const successBonus = success
+    ? ((stage === 4 || stage === 5) ? 25 : 10) + speedBonus
+    : 0;
   const reward = dead || healthAfter <= 0
     ? -10
-    : rewardFor(before, after, result, inventedNow, healthBefore, healthAfter)
-      + (success ? 10 + speedBonus : 0);
+    : rewardFor(before, after, result, inventedNow, healthBefore, healthAfter, cobbleBefore)
+      + successBonus;
   previousMilestones = after;
   return {
     observation: observe(),
