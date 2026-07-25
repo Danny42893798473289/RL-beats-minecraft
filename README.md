@@ -162,6 +162,24 @@ Each bridge accepts JSON over WebSocket:
 Responses echo `id` and include observations, reward, termination flags, and milestones. This keeps
 the Node game-control process independent from the Python learning process.
 
+## Behavior cloning (speed up)
+
+Record human demos with the Fabric **1.21.4** client mod, then warm-start PPO:
+
+1. Build/install [`recorder-mod/`](recorder-mod/) (see its README).
+2. In-game: `/rlstage 6`, press **R**, play the goal, press **R** again.
+3. Copy `.minecraft/rl-demos/*.jsonl` into [`demos/`](demos/).
+4. Clone + fine-tune:
+
+```bash
+cd trainer
+uv run python bc_train.py --demos ../demos --stage 6 --out ../checkpoints/stage_6_bc.zip
+uv run python train.py --stage 6 --load ../checkpoints/stage_6_bc.zip
+```
+
+Demos map raw keys/look to discrete Mineflayer skills heuristically — BC is a warm-start, not a
+perfect imitation of mouse/keyboard control.
+
 ## Important limitations
 
 Pure reinforcement learning from a new random policy will take substantial compute and will not

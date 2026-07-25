@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "id": "rl_demo_recorder",
+  "version": "${version}",
+  "name": "RL Demo Recorder",
+  "description": "Records client inputs and inventory snapshots as JSONL for behavior cloning.",
+  "authors": ["RL-beats-minecraft"],
+  "contact": {
+    "sources": "https://github.com/Danny42893798473289/RL-beats-minecraft"
+  },
+  "license": "MIT",
+  "environment": "client",
+  "entrypoints": {
+    "client": [
+      "com.rlbeats.recorder.RlDemoRecorderClient"
+    ]
+  },
+  "depends": {
+    "fabricloader": ">=0.16.0",
+    "minecraft": "~1.21.4",
+    "java": ">=21",
+    "fabric-api": "*"
+  }
+}
