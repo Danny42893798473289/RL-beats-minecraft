@@ -40,6 +40,8 @@ TRACKED_ITEMS = [
 ]
 
 OBSERVATION_SIZE = 64
+# Must match bridge/src/observations.js NEW_OBS_START (legacy 44 + craft/hazard bits).
+NEW_OBS_START = 44
 MAX_STAGE = 19
 
 
@@ -47,21 +49,53 @@ def _truthy(keys: dict[str, Any], name: str) -> bool:
     return bool(keys.get(name))
 
 
-def map_action(row: dict[str, Any]) -> int:
-    """Heuristic: raw client keys/look → nearest primitive action id."""
+def _inv_count(row: dict[str, Any], name: str) -> int:
+    inv = row.get("inv") or {}
+    try:
+        return int(inv.get(name) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _in_craft_screen(screen: Any) -> bool:
+    """Fabric releases often expose intermediary simple names like class_479."""
+    if not screen:
+        return False
+    s = str(screen)
+    if any(token in s for token in ("Crafting", "RecipeBook", "InventoryScreen", "Furnace", "Smoker", "Blast")):
+        return True
+    # Known intermediary / obfuscated crafting UI class names seen in demos.
+    if s.startswith("class_"):
+        return True
+    return False
+
+
+def map_action(row: dict[str, Any], prev: dict[str, Any] | None = None) -> int:
+    """Heuristic: raw client keys/look/inv deltas → nearest primitive action id."""
     keys = row.get("keys") or {}
     look = row.get("look") or {}
     screen = row.get("screen")
+    in_craft_screen = _in_craft_screen(screen)
 
-    in_craft_screen = bool(
-        screen and any(token in screen for token in ("Crafting", "RecipeBook", "InventoryScreen"))
-    )
+    # Inventory outcomes beat key heuristics (mouse crafting rarely holds attack/use).
+    if prev is not None:
+        if _inv_count(row, "furnace") > _inv_count(prev, "furnace"):
+            return ACTION_NAME_TO_ID["CRAFT_NEXT"]
+        if _inv_count(row, "stone_pickaxe") > _inv_count(prev, "stone_pickaxe"):
+            return ACTION_NAME_TO_ID["CRAFT_NEXT"]
+        if _inv_count(row, "crafting_table") < _inv_count(prev, "crafting_table"):
+            return ACTION_NAME_TO_ID["PLACE_HELD"]
+        crafted_up = any(
+            _inv_count(row, name) > _inv_count(prev, name)
+            for name in ("wooden_pickaxe", "iron_pickaxe", "diamond_pickaxe", "oak_planks", "stick")
+        )
+        if crafted_up and in_craft_screen:
+            return ACTION_NAME_TO_ID["CRAFT_NEXT"]
 
     dyaw = float(look.get("dyaw") or 0.0)
     dpitch = float(look.get("dpitch") or 0.0)
 
     if _truthy(keys, "attack"):
-        # Breaking blocks vs hitting mobs — DIG covers both for BC warm-start.
         return ACTION_NAME_TO_ID["DIG_LOOKING"]
     if _truthy(keys, "use"):
         if in_craft_screen:
@@ -72,7 +106,6 @@ def map_action(row: dict[str, Any]) -> int:
     if in_craft_screen:
         return ACTION_NAME_TO_ID["CRAFT_NEXT"]
 
-    # Look turns before translation so demos that aim still label look actions.
     if abs(dyaw) >= 4.0 and abs(dyaw) >= abs(dpitch):
         return ACTION_NAME_TO_ID["TURN_LEFT" if dyaw < 0 else "TURN_RIGHT"]
     if abs(dpitch) >= 3.0:
@@ -137,6 +170,28 @@ def build_observation(row: dict[str, Any], stage: int | None = None) -> list[flo
         1.0 if (row.get("keys") or {}).get("attack") else 0.0,
         1.0 if any(float(inv.get(k) or 0) > 0 for k in ("wooden_pickaxe", "stone_pickaxe", "iron_pickaxe", "diamond_pickaxe")) else 0.0,
         0.0, 0.0, 0.0, 0.0,
+    ])
+
+    # Slots 44–63: same order as bridge snapshot() craft-ready / look-at / hostile bits.
+    # Human demos lack look-at / light / hostile fields → leave those at 0.
+    sticks = float(inv.get("stick") or 0)
+    total_planks = sum(
+        float(count or 0) for name, count in inv.items() if str(name).endswith("_planks")
+    )
+    cobble = float(inv.get("cobblestone") or 0) + float(inv.get("cobbled_deepslate") or 0)
+    values.extend([
+        min(sticks, 64.0) / 64.0,
+        min(total_planks, 64.0) / 64.0,
+        0.0,  # table nearby unknown
+        1.0 if float(inv.get("wooden_pickaxe") or 0) > 0 else 0.0,
+        1.0 if cobble >= 8 else 0.0,
+        0.0,  # look stone
+        0.0,  # look log
+        0.0,  # look hazard
+        0.0,  # light
+        0.0,  # hostile present
+        0.5,  # hostile dx neutral
+        0.5,  # hostile dz neutral
     ])
 
     while len(values) < OBSERVATION_SIZE:

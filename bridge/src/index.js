@@ -402,11 +402,28 @@ const UNSAFE_FLOOR = new Set([
   "cobweb", "ice", "frosted_ice", "packed_ice", "blue_ice"
 ]);
 
+/** Biomes that count as "above ocean" — never accept as spawn. */
+function isOceanBiomeName(name) {
+  if (!name) return false;
+  const n = String(name).toLowerCase();
+  return n.includes("ocean") || n.includes("warm_ocean") || n === "beach" || n.includes("stony_shore");
+}
+
+function spawnBiomeName() {
+  try {
+    const block = bot.blockAt(bot.entity?.position);
+    return block?.biome?.name ?? "";
+  } catch {
+    return "";
+  }
+}
+
 function isSpawnSafe() {
   if (!bot?.entity) return false;
   const pos = bot.entity.position;
   const y = pos.y;
   if (y < -60 || y > 220) return false;
+  if (isOceanBiomeName(spawnBiomeName())) return false;
   const below = bot.blockAt(pos.offset(0, -1, 0));
   const feet = bot.blockAt(pos);
   const head = bot.blockAt(pos.offset(0, 1, 0));
@@ -447,35 +464,135 @@ async function forceLandPlatform(client, name, x, z) {
   await client.send(`execute in minecraft:overworld run tp ${name} ${x + 0.5} ${y + 1} ${z + 0.5}`);
 }
 
+/** Parse `/locate biome` chat/RCON reply → {x,z} or null. */
+function parseLocateBiome(reply) {
+  if (!reply) return null;
+  const text = String(reply);
+  // 1.21 style: "... at [123, ~, -456] (N blocks away)"
+  const bracket = text.match(/\[(-?\d+)\s*,\s*[^,\]]+\s*,\s*(-?\d+)\]/);
+  if (bracket) {
+    return { x: Number(bracket[1]), z: Number(bracket[2]) };
+  }
+  const plain = text.match(/at\s+(-?\d+)\s+[^\s]+\s+(-?\d+)/i);
+  if (plain) {
+    return { x: Number(plain[1]), z: Number(plain[2]) };
+  }
+  return null;
+}
+
+/**
+ * Ask the server for inland biomes near the pad. Prefer not building fake islands on ocean.
+ */
+async function locateInlandNearPad(client, baseX, baseZ) {
+  const biomes = [
+    "minecraft:plains",
+    "minecraft:forest",
+    "minecraft:birch_forest",
+    "minecraft:taiga",
+    "minecraft:savanna",
+    "minecraft:cherry_grove",
+    "minecraft:meadow",
+    "minecraft:windswept_hills",
+    "minecraft:jungle",
+    "minecraft:dark_forest"
+  ];
+  let best = null;
+  let bestDist = Infinity;
+  for (const biome of biomes) {
+    try {
+      // Locate from a high point near the pad so results are biased nearby.
+      const reply = await client.send(
+        `execute in minecraft:overworld positioned ${baseX} 80 ${baseZ} run locate biome ${biome}`
+      );
+      const hit = parseLocateBiome(reply);
+      if (!hit) continue;
+      const dist = Math.hypot(hit.x - baseX, hit.z - baseZ);
+      // Stay in this bot's pad neighborhood when possible (avoid colliding with other ranks).
+      if (dist < bestDist && dist < Math.max(2500, config.padSpacing * 0.9)) {
+        best = hit;
+        bestDist = dist;
+      }
+    } catch {
+      // locate may fail if biome not generated yet
+    }
+  }
+  return best;
+}
+
+function padSearchCenters(baseX, baseZ) {
+  const centers = [[baseX, baseZ]];
+  for (const r of [64, 128, 192, 256, 384, 512, 768]) {
+    centers.push(
+      [baseX + r, baseZ],
+      [baseX - r, baseZ],
+      [baseX, baseZ + r],
+      [baseX, baseZ - r],
+      [baseX + r, baseZ + r],
+      [baseX - r, baseZ + r],
+      [baseX + r, baseZ - r],
+      [baseX - r, baseZ - r]
+    );
+  }
+  return centers;
+}
+
 async function teleportToSafePad(client, name) {
   const baseX = config.padX;
   const baseZ = config.padZ;
-  // Try pad center, then nearby offsets so ocean pads can find shore / land.
-  const centers = [
-    [baseX, baseZ],
-    [baseX + 64, baseZ],
-    [baseX - 64, baseZ],
-    [baseX, baseZ + 64],
-    [baseX, baseZ - 64],
-    [baseX + 128, baseZ + 128],
-    [baseX - 128, baseZ + 128],
-    [baseX + 128, baseZ - 128],
-    [baseX - 128, baseZ - 128],
-    [baseX + 256, baseZ]
-  ];
+  const waitMs = Math.max(500, config.softResetSleepMs);
 
-  for (const [x, z] of centers) {
+  // 1) spreadplayers around pad + spiral offsets (rejects ocean biomes via isSpawnSafe).
+  for (const [x, z] of padSearchCenters(baseX, baseZ)) {
     await client.send(`execute in minecraft:overworld run tp ${name} ${x} 140 ${z}`);
-    await rconSpread(client, name, x, z, 8, 96);
-    await new Promise((resolve) => setTimeout(resolve, Math.max(400, config.softResetSleepMs)));
-    if (isSpawnSafe()) return { x, z, method: "spreadplayers" };
+    await rconSpread(client, name, x, z, 8, 128);
+    await new Promise((resolve) => setTimeout(resolve, waitMs));
+    if (isSpawnSafe()) {
+      return { x: Math.floor(bot.entity.position.x), z: Math.floor(bot.entity.position.z), method: "spreadplayers" };
+    }
   }
 
-  // Guaranteed dry land near the pad (even in deep ocean).
-  await forceLandPlatform(client, name, baseX, baseZ);
-  await new Promise((resolve) => setTimeout(resolve, Math.max(400, config.softResetSleepMs)));
-  return { x: baseX, z: baseZ, method: "platform" };
+  // 2) Server-side locate inland biome near this pad — never build a platform on open ocean.
+  const inland = await locateInlandNearPad(client, baseX, baseZ);
+  if (inland) {
+    await client.send(`execute in minecraft:overworld run tp ${name} ${inland.x} 140 ${inland.z}`);
+    await rconSpread(client, name, inland.x, inland.z, 8, 96);
+    await new Promise((resolve) => setTimeout(resolve, waitMs));
+    if (isSpawnSafe()) {
+      return { x: Math.floor(bot.entity.position.x), z: Math.floor(bot.entity.position.z), method: "locate_biome" };
+    }
+    // Dry grass pad on the located inland coords (still not ocean).
+    await forceLandPlatform(client, name, inland.x, inland.z);
+    await new Promise((resolve) => setTimeout(resolve, waitMs));
+    if (isSpawnSafe() || !isOceanBiomeName(spawnBiomeName())) {
+      return { x: inland.x, z: inland.z, method: "platform_inland" };
+    }
+  }
+
+  // 3) Last resort: keep searching further along +X (away from other pads' oceans).
+  for (let step = 1; step <= 8; step += 1) {
+    const x = baseX + step * 512;
+    const z = baseZ;
+    await client.send(`execute in minecraft:overworld run tp ${name} ${x} 140 ${z}`);
+    await rconSpread(client, name, x, z, 16, 192);
+    await new Promise((resolve) => setTimeout(resolve, waitMs));
+    if (isSpawnSafe()) {
+      return { x: Math.floor(bot.entity.position.x), z: Math.floor(bot.entity.position.z), method: "far_spread" };
+    }
+  }
+
+  console.warn(
+    `No non-ocean land found for ${name} near pad (${baseX},${baseZ}); refusing ocean platform`
+  );
+  // Soft-fail: leave bot wherever spread last put them rather than building on ocean.
+  const pos = bot.entity?.position;
+  return {
+    x: Math.floor(pos?.x ?? baseX),
+    z: Math.floor(pos?.z ?? baseZ),
+    method: "failed_ocean"
+  };
 }
+
+let cachedSafePad = null; // { x, z } after a verified inland spawn
 
 async function softReset() {
   await ensureReady(90000);
@@ -487,11 +604,41 @@ async function softReset() {
     await client.send(`clear ${name}`);
     await client.send(`effect clear ${name}`);
     await client.send(`gamemode survival ${name}`);
-    const land = await teleportToSafePad(client, name);
+
+    let land = null;
+    const waitMs = Math.max(400, config.softResetSleepMs);
+    // Reuse a known-safe pad so we skip /locate biome search on every death.
+    if (cachedSafePad) {
+      await client.send(
+        `execute in minecraft:overworld run tp ${name} ${cachedSafePad.x} 140 ${cachedSafePad.z}`
+      );
+      await rconSpread(client, name, cachedSafePad.x, cachedSafePad.z, 8, 64);
+      await new Promise((resolve) => setTimeout(resolve, waitMs));
+      if (isSpawnSafe()) {
+        land = {
+          x: Math.floor(bot.entity.position.x),
+          z: Math.floor(bot.entity.position.z),
+          method: "cached_pad"
+        };
+      } else {
+        cachedSafePad = null;
+      }
+    }
+    if (!land) {
+      land = await teleportToSafePad(client, name);
+      if (land.method !== "failed_ocean") {
+        cachedSafePad = { x: land.x, z: land.z };
+      }
+    }
+
     if (!isSpawnSafe()) {
-      // One more hard platform if chunk data lagged the first check.
-      await forceLandPlatform(client, name, land.x, land.z);
-      await new Promise((resolve) => setTimeout(resolve, Math.max(400, config.softResetSleepMs)));
+      // Retry inland platform only — never build a grass island on ocean pads.
+      const inland = await locateInlandNearPad(client, land.x, land.z);
+      if (inland) {
+        await forceLandPlatform(client, name, inland.x, inland.z);
+        await new Promise((resolve) => setTimeout(resolve, waitMs));
+        cachedSafePad = { x: inland.x, z: inland.z };
+      }
     }
     await client.send(`effect give ${name} resistance 5 255 true`);
     await client.send(`effect give ${name} slow_falling 3 0 true`);
@@ -524,7 +671,10 @@ async function softReset() {
   }
 }
 
+let lastResetMs = null;
+
 async function resetEpisode(requestedStage = 1) {
+  const resetStarted = Date.now();
   await ensureReady(180000).catch(() => {
     throw new Error("bot_not_ready");
   });
@@ -547,6 +697,7 @@ async function resetEpisode(requestedStage = 1) {
     && (!config.sharedServer || config.botRank === 0);
   if (wantWipe) {
     wiped = await wipeWorld();
+    cachedSafePad = null;
   } else if (config.sharedServer && !ready) {
     // Another rank may have wiped the shared world — wait for Paper + spawn.
     await ensureReady(300000).catch(() => {
@@ -564,6 +715,7 @@ async function resetEpisode(requestedStage = 1) {
       maxDistance: 16
     })
   );
+  lastResetMs = Date.now() - resetStarted;
   return {
     observation: observe(),
     info: {
@@ -573,7 +725,8 @@ async function resetEpisode(requestedStage = 1) {
       wipeRequested: wantWipe,
       wipeEvery: config.wipeEvery,
       pad: { x: config.padX, z: config.padZ, rank: config.botRank },
-      sharedServer: config.sharedServer
+      sharedServer: config.sharedServer,
+      resetMs: lastResetMs
     }
   };
 }
@@ -606,7 +759,9 @@ function rewardFor(before, after, result, inventedNow, healthBefore, healthAfter
     // Cobble is the stage-4 goal — make the milestone loud.
     cobblestone: 14,
     // Stage-5 goal — louder than cobble so crafting wins over mining forever.
-    stone_pickaxe: 22, furnace: 4,
+    stone_pickaxe: 22,
+    // Stage-6 goal — match stone pick so seedless furnace crafts beat endless cobble.
+    furnace: 22,
     raw_iron: 6, iron_ingot: 10, iron_pickaxe: 16,
     diamond: 22, diamond_pickaxe: 36,
     obsidian: 30, flint_and_steel: 24,
@@ -626,7 +781,7 @@ function rewardFor(before, after, result, inventedNow, healthBefore, healthAfter
   if (result.crafted?.endsWith("_planks") && result.amount >= 4) reward += 0.4;
   if (result.reason === "need_more_planks" || result.reason === "need_more_logs") reward -= 0.02;
   if (result.crafted === "crafting_table") reward += 1;
-  if (result.crafted === "furnace") reward += 2;
+  if (result.crafted === "furnace") reward += stage === 6 ? 10 : 2;
   if (result.crafted === "iron_pickaxe") reward += 4;
   if (result.crafted === "diamond_pickaxe") reward += 6;
   if (result.crafted === "bucket") reward += 1;
@@ -646,7 +801,9 @@ function rewardFor(before, after, result, inventedNow, healthBefore, healthAfter
   } else if (result.placed === "crafting_table" && !result.newlyPlaced) {
     reward -= 0.05; // visited/opened existing table without placing
   }
-  if (result.placed === "furnace" && result.newlyPlaced !== false) reward += 1.5;
+  if (result.placed === "furnace" && result.newlyPlaced !== false) {
+    reward += stage === 6 ? 3.0 : 1.5;
+  }
 
   if (result.crafted === "stick") {
     const sticks = bot.inventory.items()
@@ -662,16 +819,17 @@ function rewardFor(before, after, result, inventedNow, healthBefore, healthAfter
   if (result.mined === "obsidian") reward += 3;
 
   // Dense cobble shaping: every cobble gained counts (not only first milestone).
-  // Stage 5: once they have enough for a stone pick (≥3), stop paying for more cobble
-  // so the policy shifts to craft instead of mining forever.
+  // Stage 5: once they have enough for a stone pick (≥3), stop paying for more cobble.
+  // Stage 6: once they have enough for a furnace (≥8), stop paying for more cobble.
   const cobbleAfter = countInv("cobblestone") + countInv("cobbled_deepslate");
   const cobbleGain = Math.max(0, cobbleAfter - cobbleBefore);
   if (cobbleGain > 0) {
     const readyForStonePick = stage === 5 && cobbleBefore >= 3 && !after.stone_pickaxe;
-    if (readyForStonePick) {
+    const readyForFurnace = stage === 6 && cobbleBefore >= 8 && !after.furnace;
+    if (readyForStonePick || readyForFurnace) {
       reward -= cobbleGain * 0.35;
     } else {
-      reward += cobbleGain * (stage === 4 ? 2.5 : stage === 5 ? 1.6 : 1.2);
+      reward += cobbleGain * (stage === 4 ? 2.5 : stage === 5 ? 1.6 : stage === 6 ? 1.0 : 1.2);
     }
   }
 
@@ -690,6 +848,24 @@ function rewardFor(before, after, result, inventedNow, healthBefore, healthAfter
     } else if (cobbleAfter > 0 && cobbleAfter < 3) {
       // Still short of 3 — keep light dig-down pressure.
       if (result.tunneled || result.seeking_stone) reward += 0.15;
+    }
+  }
+
+  // Stage 6 (seedless): push furnace craft once cobble≥8; don't mine forever.
+  if (stage === 6 && !after.furnace) {
+    const sticks = countInv("stick");
+    const actionName = result.name ?? "";
+    if (cobbleAfter >= 8) {
+      if (result.crafted === "stick" && sticks <= 8) reward += 1.0;
+      if (result.crafted === "crafting_table") reward += 1.5;
+      if (result.placed === "crafting_table" && result.newlyPlaced) reward += 1.2;
+      if (result.crafted === "furnace") reward += 2.0;
+      if (result.via === "use_table" || result.via === "path_to_table") reward += 0.4;
+      if (actionName === "CRAFT_NEXT") reward += 0.45;
+      if (actionName === "WAIT") reward -= 0.08;
+      if (actionName === "DIG_LOOKING" && result.mined && !result.crafted) reward -= 0.15;
+    } else if (cobbleAfter > 0 && cobbleAfter < 8) {
+      if (result.tunneled || result.seeking_stone) reward += 0.12;
     }
   }
 
@@ -805,6 +981,7 @@ function pickaxeMissing(milestones) {
 }
 
 async function step(action) {
+  const stepStarted = Date.now();
   await ensureReady(90000).catch(() => {
     throw new Error("bot_not_ready");
   });
@@ -842,33 +1019,38 @@ async function step(action) {
   const damageTaken = Math.max(0, healthBefore - healthAfter);
   const speedBonus = success ? stageSpeedBonus(episodeStep) : 0;
   const successBonus = success
-    ? ((stage === 4 || stage === 5) ? 25 : 10) + speedBonus
+    ? ((stage === 4 || stage === 5 || stage === 6) ? 25 : 10) + speedBonus
     : 0;
   const reward = dead || healthAfter <= 0
     ? -10
     : rewardFor(before, after, result, inventedNow, healthBefore, healthAfter, cobbleBefore)
       + successBonus;
   previousMilestones = after;
+  const info = {
+    ...actionInfo(),
+    action: result.name ?? actionNames(inventor.list())[action] ?? "UNKNOWN",
+    result,
+    milestones: after,
+    episodeStep,
+    success,
+    stageGoal: goal,
+    stageCompletions,
+    speedBonus,
+    inventedNow,
+    healthBefore,
+    healthAfter,
+    damageTaken,
+    stepMs: Date.now() - stepStarted
+  };
+  if (episodeStep === 1 && lastResetMs != null) {
+    info.resetMs = lastResetMs;
+  }
   return {
     observation: observe(),
     reward,
     terminated,
     truncated,
-    info: {
-      ...actionInfo(),
-      action: result.name ?? actionNames(inventor.list())[action] ?? "UNKNOWN",
-      result,
-      milestones: after,
-      episodeStep,
-      success,
-      stageGoal: goal,
-      stageCompletions,
-      speedBonus,
-      inventedNow,
-      healthBefore,
-      healthAfter,
-      damageTaken
-    }
+    info
   };
 }
 

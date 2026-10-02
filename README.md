@@ -162,12 +162,38 @@ Each bridge accepts JSON over WebSocket:
 Responses echo `id` and include observations, reward, termination flags, and milestones. This keeps
 the Node game-control process independent from the Python learning process.
 
-## Behavior cloning (speed up)
+## Seedless training (recommended path)
 
-Record human demos with the Fabric **1.21.4** client mod, then warm-start PPO:
+No free items. Seeds stay off in `config.json` (`seed_wooden_pickaxe` / `seed_stone_craft_kit`).
+
+1. Restart stack after reward/bridge changes:
+```bash
+cd scripts && ./start_local.sh
+```
+2. Train from the best checkpoint (auto-saves new peaks to `*_best.zip`, early-stops on collapse):
+```bash
+cd trainer
+uv run python train.py --stage 6 --load ../checkpoints/stage_6_furnace_best.zip
+```
+3. Successful episodes are logged to `demos/success_stage_6.jsonl` (discrete Mineflayer actions).
+4. When that file has real wins, light BC then PPO (abort if `entropy_loss` rises above ~-2.5):
+```bash
+uv run python bc_train.py \
+  --demos ../demos/success_stage_6.jsonl \
+  --stage 6 --epochs 8 --lr 1e-4 \
+  --load ../checkpoints/stage_6_furnace_best.zip \
+  --out ../checkpoints/stage_6_bc.zip
+uv run python train.py --stage 6 --load ../checkpoints/stage_6_bc.zip
+```
+
+Ops tips: `num_bots` 12 on ~16GB RAM; keep viewers off; close Prism while training; always prefer `*_best.zip` over `final`.
+
+## Behavior cloning (human Fabric demos — optional)
+
+Record with the Fabric **1.21.4** client mod, then warm-start PPO. Prefer **success-replay** above for seedless; human demos often overfit dig/wait.
 
 1. Build/install [`recorder-mod/`](recorder-mod/) (see its README).
-2. In-game: `/rlstage 6`, press **R**, play the goal, press **R** again.
+2. In-game: press **R**, play the goal, press **R** again.
 3. Copy `.minecraft/rl-demos/*.jsonl` into [`demos/`](demos/).
 4. Clone + fine-tune:
 
@@ -176,9 +202,6 @@ cd trainer
 uv run python bc_train.py --demos ../demos --stage 6 --out ../checkpoints/stage_6_bc.zip
 uv run python train.py --stage 6 --load ../checkpoints/stage_6_bc.zip
 ```
-
-Demos map raw keys/look to discrete Mineflayer skills heuristically — BC is a warm-start, not a
-perfect imitation of mouse/keyboard control.
 
 ## Important limitations
 

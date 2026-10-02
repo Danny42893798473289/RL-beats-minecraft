@@ -13,11 +13,13 @@ cd recorder-mod
 
 Jar: `build/libs/rl-demo-recorder-1.0.0.jar`
 
+**Do not install** `*-sources.jar` — that has no compiled classes and will crash with `ClassNotFoundException`.
+
 ## Install
 
 1. Install Fabric Loader for Minecraft **1.21.4** (PrismLauncher / official installer).
 2. Install [Fabric API](https://modrinth.com/mod/fabric-api) for 1.21.4.
-3. Copy `rl-demo-recorder-1.0.0.jar` into the instance `mods/` folder.
+3. Copy **`rl-demo-recorder-1.0.0.jar`** (not `*-sources.jar`) into the instance `mods/` folder.
 
 ## Record
 

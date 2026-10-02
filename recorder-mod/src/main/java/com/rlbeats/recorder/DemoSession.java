@@ -144,7 +144,12 @@ public class DemoSession {
 			row.put("pos", pos);
 
 			row.put("inv", countInventory(player));
-			row.put("screen", client.currentScreen == null ? null : client.currentScreen.getClass().getSimpleName());
+			// Prefer human-readable name; intermediary clients may still yield class_XXX.
+			String screenName = null;
+			if (client.currentScreen != null) {
+				screenName = client.currentScreen.getClass().getName();
+			}
+			row.put("screen", screenName);
 
 			writer.write(GSON.toJson(row));
 			writer.newLine();

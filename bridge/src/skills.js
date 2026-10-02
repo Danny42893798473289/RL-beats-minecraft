@@ -226,7 +226,7 @@ function findMineTarget(bot, stage = 0) {
   const tier = pickaxeTier(bot);
   // Cobble stage: only hunt stone-family blocks first (skip logs).
   if (seekingCobble(bot, stage) && tier >= 1) {
-    const stone = findStoneTarget(bot, 36);
+    const stone = findStoneTarget(bot, 8);
     if (stone) return stone;
   }
 
@@ -248,6 +248,24 @@ function findMineTarget(bot, stage = 0) {
 }
 
 /** Dig dirt/sand underfoot or look down to reach stone. */
+function isUnsafeToDig(bot, block) {
+  if (!block) return true;
+  if (block.name === "lava" || block.name === "flowing_lava") return true;
+  let airDrop = 0;
+  for (let dy = 1; dy <= 4; dy += 1) {
+    const below = bot.blockAt(block.position.offset(0, -dy, 0));
+    const name = below?.name;
+    if (!below || name === "air" || name === "cave_air" || name === "void_air") {
+      airDrop += 1;
+      if (airDrop > 3) return true;
+      continue;
+    }
+    if (name === "lava" || name === "flowing_lava") return true;
+    break;
+  }
+  return false;
+}
+
 async function digTowardStone(bot) {
   await bot.look(bot.entity.yaw, -1.2, false).catch(() => {});
   // Prefer a vertical shaft: feet, then 2–3 blocks down, then cursor.
@@ -263,6 +281,9 @@ async function digTowardStone(bot) {
     if (!block || block.name === "air" || block.name === "bedrock" || block.name === "water" || block.name === "lava") {
       continue;
     }
+    if (isUnsafeToDig(bot, block)) {
+      continue;
+    }
     if (STONE_BLOCKS.includes(block.name) || blockPrefersPickaxe(block.name)) {
       return digBlock(bot, block);
     }
@@ -271,6 +292,7 @@ async function digTowardStone(bot) {
       const heldBefore = bot.heldItem?.name ?? null;
       const target = bot.blockAt(block.position) ?? block;
       if (!target || target.name === "air") continue;
+      if (isUnsafeToDig(bot, target)) continue;
       await bot.dig(target, true);
       await sleep(60);
       return {
@@ -502,7 +524,7 @@ async function digLooking(bot, state = {}) {
 
   // Cobble stage: ignore surface dirt at cursor — go for stone or dig down.
   if (wantCobble) {
-    const stone = findStoneTarget(bot, 36);
+    const stone = findStoneTarget(bot, 8);
     if (stone) return digBlock(bot, stone);
     return digTowardStone(bot);
   }
@@ -520,7 +542,7 @@ async function digLooking(bot, state = {}) {
   }
   // If cursor is soft surface but we have a pick and see stone, prefer stone.
   if (hasPickaxe(bot) && block && SOFT_SURFACE.has(block.name)) {
-    const stone = findStoneTarget(bot, 24);
+    const stone = findStoneTarget(bot, 8);
     if (stone) return digBlock(bot, stone);
   }
   return digBlock(bot, block);

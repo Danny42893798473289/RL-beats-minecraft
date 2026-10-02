@@ -27,6 +27,22 @@ const LOG_BLOCK_NAMES = [
   "dark_oak_log", "mangrove_log", "cherry_log", "pale_oak_log"
 ];
 
+const STONE_LOOK_NAMES = new Set([
+  "stone", "cobblestone", "cobbled_deepslate", "deepslate",
+  "granite", "diorite", "andesite", "tuff", "blackstone"
+]);
+
+const PASSIVE_MOBS = new Set([
+  "cow", "pig", "sheep", "chicken", "rabbit", "horse", "donkey", "mule",
+  "llama", "trader_llama", "cat", "wolf", "parrot", "ocelot", "fox",
+  "bee", "turtle", "panda", "polar_bear", "goat", "axolotl", "frog",
+  "tadpole", "camel", "sniffer", "allay", "villager", "wandering_trader",
+  "iron_golem", "snow_golem", "bat", "squid", "glow_squid", "dolphin",
+  "cod", "salmon", "tropical_fish", "pufferfish", "mooshroom", "strider"
+]);
+
+/** First unused slot after the legacy 44-dim observation. Keep size 64. */
+export const NEW_OBS_START = 44;
 export const OBSERVATION_SIZE = 64;
 
 function countItems(bot) {
@@ -79,6 +95,88 @@ export function needsWoodExplore(bot) {
 
 export const MAX_STAGE = 19;
 
+function isLavaName(name) {
+  return name === "lava" || name === "flowing_lava";
+}
+
+function isAirName(name) {
+  return !name || name === "air" || name === "cave_air" || name === "void_air";
+}
+
+/** True when digging this block would open lava or a drop of more than 3. */
+function isHazardBlock(bot, block) {
+  if (!block) return false;
+  if (isLavaName(block.name)) return true;
+  for (let dy = 1; dy <= 4; dy += 1) {
+    const below = bot.blockAt?.(block.position.offset(0, -dy, 0));
+    if (!below || isAirName(below.name)) {
+      if (dy > 3) return true;
+      continue;
+    }
+    if (isLavaName(below.name)) return true;
+    break;
+  }
+  return false;
+}
+
+function lookAtFlags(bot) {
+  let cursor = null;
+  try {
+    cursor = bot.blockAtCursor?.(5) ?? null;
+  } catch {
+    cursor = null;
+  }
+  const name = cursor?.name ?? "";
+  return {
+    stone: STONE_LOOK_NAMES.has(name) ? 1 : 0,
+    log: LOG_BLOCK_NAMES.includes(name) ? 1 : 0,
+    hazard: isHazardBlock(bot, cursor) ? 1 : 0
+  };
+}
+
+function lightLevel(bot) {
+  try {
+    const block = bot.blockAt(bot.entity?.position);
+    const light = block?.light ?? block?.skyLight ?? 15;
+    return Math.max(0, Math.min(15, Number(light) || 0)) / 15;
+  } catch {
+    return 1;
+  }
+}
+
+function nearestHostileDirection(bot) {
+  const me = bot.entity?.position;
+  if (!me) return { present: 0, dx: 0.5, dz: 0.5 };
+  let best = null;
+  let bestDist = 16;
+  for (const entity of Object.values(bot.entities ?? {})) {
+    if (!entity || entity === bot.entity) continue;
+    if (entity.type === "player") {
+      const uname = entity.username || entity.name || "";
+      if (/^rl_bot_\d+$/i.test(uname)) continue;
+    } else if (entity.type !== "mob" && entity.type !== "hostile") {
+      continue;
+    } else {
+      const name = entity.name || entity.displayName || "";
+      if (PASSIVE_MOBS.has(name)) continue;
+    }
+    const dist = entity.position.distanceTo(me);
+    if (dist > bestDist) continue;
+    bestDist = dist;
+    best = entity;
+  }
+  if (!best) return { present: 0, dx: 0.5, dz: 0.5 };
+  const rawDx = best.position.x - me.x;
+  const rawDz = best.position.z - me.z;
+  const horiz = Math.hypot(rawDx, rawDz) || 1;
+  // Map [-1, 1] → [0, 1] for the Box observation space.
+  return {
+    present: 1,
+    dx: 0.5 + 0.5 * (rawDx / horiz),
+    dz: 0.5 + 0.5 * (rawDz / horiz)
+  };
+}
+
 export function snapshot(bot, stage = 1, inventedCount = 0, maxInvented = 32, extra = {}) {
   const counts = countItems(bot);
   const pos = bot.entity?.position;
@@ -112,6 +210,34 @@ export function snapshot(bot, stage = 1, inventedCount = 0, maxInvented = 32, ex
     explore.treelessBiome ? 1 : 0,
     explore.logsNearby ? 1 : 0,
     explore.needsExplore ? 1 : 0
+  );
+
+  // Slots 44–63: craft-ready + look-at + light + hostile direction.
+  const sticks = counts.get("stick") ?? 0;
+  let totalPlanks = 0;
+  for (const [name, count] of counts) {
+    if (name.endsWith("_planks")) totalPlanks += count;
+  }
+  const cobble = (counts.get("cobblestone") ?? 0) + (counts.get("cobbled_deepslate") ?? 0);
+  const tableNearby = Boolean(bot.findBlock?.({
+    matching: bot.registry?.blocksByName?.crafting_table?.id,
+    maxDistance: 16
+  }));
+  const look = lookAtFlags(bot);
+  const threat = nearestHostileDirection(bot);
+  values.push(
+    Math.min(sticks, 64) / 64,
+    Math.min(totalPlanks, 64) / 64,
+    tableNearby ? 1 : 0,
+    (counts.get("wooden_pickaxe") ?? 0) > 0 ? 1 : 0,
+    cobble >= 8 ? 1 : 0,
+    look.stone,
+    look.log,
+    look.hazard,
+    lightLevel(bot),
+    threat.present,
+    threat.dx,
+    threat.dz
   );
 
   while (values.length < OBSERVATION_SIZE) values.push(0);
